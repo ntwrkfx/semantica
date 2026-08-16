@@ -1,0 +1,9 @@
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix sqn: <https://id.example.invalid/schema/> .
+
+sqn:AssertionShape a sh:NodeShape ;
+  sh:targetClass sqn:Assertion ;
+  sh:property [ sh:path sqn:subject ; sh:minCount 1 ; sh:maxCount 1 ] ;
+  sh:property [ sh:path sqn:predicate ; sh:minCount 1 ; sh:maxCount 1 ] ;
+  sh:property [ sh:path sqn:value ; sh:minCount 1 ; sh:maxCount 1 ] ;
+  sh:property [ sh:path sqn:evidence ; sh:minCount 1 ; sh:maxCount 1 ] .
