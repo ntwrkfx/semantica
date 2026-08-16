@@ -2,7 +2,7 @@
 
 Status: APPROVED DESIGN / NOT IMPLEMENTED  
 Decision: D1:A  
-Baseline: upstream `semantica-agi/semantica@5579851208ae5adbc813c787be8c8581d8bd2aed`  
+Runtime baseline: Semantica `v0.6.5` commit `5b319560fb0b8403644b70bc592864418cdcc740`  
 Target: deterministic, read-first semantic/provenance projection proof
 
 ## Objective
@@ -18,7 +18,7 @@ V1 does not:
 - make Semantica the sole authoritative datastore;
 - expose unrestricted native MCP writes;
 - auto-promote inferred or agent-generated facts to canonical truth;
-- certify every graph/vector backend;
+- certify external graph/vector backends;
 - implement production multi-store erasure;
 - deploy Explorer publicly;
 - follow Semantica `main` automatically.
@@ -45,7 +45,7 @@ Semantica projection
   - semantic relationships
         |
         v
-Validation gate
+SHACL validation gate
         |
    +----+----+
    |         |
@@ -83,7 +83,7 @@ https://id.example.invalid/decision/<id>
 https://id.example.invalid/evidence/sha256/<digest>
 ```
 
-The example host is intentionally non-routable for V1 tests. A production namespace is a later deployment decision.
+The example host is intentionally non-routable for V1 tests. A production namespace is a later deployment decision and is not needed to verify determinism.
 
 Every projected record carries at minimum:
 
@@ -146,9 +146,9 @@ receive source
 -> project
 ```
 
-V1 uses explicit persistent provenance storage. Implicit in-memory provenance is not acceptable for the proof.
+V1 uses Semantica `ProvenanceManager` with an explicitly configured SQLite path. Implicit in-memory provenance is a test failure.
 
-Every canonicalized assertion must trace to at least one evidence object and source version.
+Every accepted Assertion must trace to at least one evidence object and source version. Any CanonicalFact fixture used solely for negative admission tests must also require promotion evidence.
 
 ## Temporal semantics
 
@@ -173,18 +173,21 @@ source capture
 -> deduplication
 -> conflict detection
 -> resolution or preservation of competing assertions
--> graph validation
+-> SHACL validation
 -> projection
 -> verification receipt
 ```
 
-Handlers should be deterministic for fixed input/configuration and should not depend on mutable process-global state.
+Handlers are deterministic for fixed input/configuration and must not depend on mutable process-global state.
 
 ## Validation
 
-V1 requires an admission validator before data is accepted into the durable projection.
+V1 uses two explicit validation layers:
 
-The validation contract must enforce at least:
+1. **Ingress envelope validation** using Pydantic models for source records, assertions, decisions, and projection receipts.
+2. **Graph-level validation** using version-controlled SHACL Turtle shapes and Semantica's SHACL support.
+
+The validation contract enforces at least:
 
 - canonical URI present;
 - record type belongs to the V1 semantic vocabulary;
@@ -193,26 +196,25 @@ The validation contract must enforce at least:
 - temporal interval is coherent when both endpoints exist;
 - CanonicalFact cannot be created without promotion evidence.
 
-SHACL is the preferred graph-level validation mechanism where the V1 representation is RDF-compatible. Flat ingress envelopes may additionally use Pydantic or JSON Schema.
+Generated ontology/shapes may assist discovery but are not normative. V1 normative SHACL shapes are committed source artifacts.
 
-Generated ontology/shapes may assist discovery but are not normative. Normative constraints are version-controlled.
+## Concrete V1 persistence
 
-## Persistence boundary
+V1 deliberately avoids an external graph database so backend portability is not confused with proof correctness.
 
-`ContextGraph` is a working/query graph, not the sole durable system of record.
+The proof uses:
 
-V1 persistence is split into:
+1. **Immutable evidence corpus** — committed JSON fixtures with SHA-256 corpus digest.
+2. **Persistent provenance store** — SQLite via explicit `ProvenanceManager(storage_path=...)`.
+3. **Durable semantic projection** — canonical JSON written atomically with deterministic key/order normalization before hashing.
+4. **ContextGraph working set** — reconstructed from the durable projection for query, temporal behavior, decision relationships, and reasoning.
+5. **Version snapshots** — SQLite-backed `TemporalVersionManager` for pre/post state comparison where required by the recovery gate.
 
-1. **source/evidence corpus** — immutable test inputs plus digests;
-2. **provenance store** — persistent lineage/integrity records;
-3. **durable semantic projection** — one certified backend or deterministic serialized representation;
-4. **ContextGraph working set** — loaded/reconstructed for query, reasoning, and temporal operations.
+A future phase may certify Apache AGE, Neo4j, or another backend using the same public postcondition tests. External backend certification is not required for V1 completion.
 
-Backend portability is not assumed. V1 certifies exactly the backend/representation used by the proof.
+## Read interface boundary
 
-## Interface boundary
-
-V1 is read-first.
+V1 provides a small application-owned read facade. It does not expose native Semantica write tools.
 
 Allowed external capabilities:
 
@@ -242,17 +244,19 @@ MUTATE
 - purge
 ```
 
-If MCP is used for V1, only the read surface is exposed through the integration boundary. Native Semantica write tools are not considered authorization-safe merely because they are available.
+The read facade contains no mutation methods. Negative tests assert that promotion/retraction/purge operations are not addressable through it.
+
+A read-only MCP wrapper may be added after the V1 proof passes; MCP is not required to prove the core projection contract.
 
 ## Version and supply-chain policy
 
-The proof starts from exact Semantica commit:
+The proof runtime starts from Semantica release `v0.6.5`, annotated tag target commit:
 
-`5579851208ae5adbc813c787be8c8581d8bd2aed`
+`5b319560fb0b8403644b70bc592864418cdcc740`
 
-Runtime/package installation must be pinned to an approved release/artifact or commit and recorded in the verification receipt. Automatic tracking of upstream `main` is prohibited.
+The implementation branch must derive from that exact commit. Package/environment receipts must also record the resolved Semantica version and commit. Automatic tracking of upstream `main` is prohibited.
 
-Every future Semantica upgrade is treated as a compatibility migration and must rerun the V1 acceptance suite.
+Every future Semantica upgrade is treated as a compatibility migration and must rerun the complete V1 acceptance suite before promotion.
 
 ## Acceptance gates
 
@@ -264,11 +268,11 @@ The same source record produces the same canonical URI on repeated runs.
 
 ### G2 — Replay convergence
 
-The fixed corpus ingested twice yields the same canonical graph/projection. No unexplained duplicate entities, assertions, or relationships are created.
+The fixed corpus ingested twice yields the same canonical projection digest. No unexplained duplicate entities, assertions, or relationships are created.
 
 ### G3 — Provenance completeness
 
-Every accepted Assertion and CanonicalFact traces to at least one persisted source/evidence record.
+Every accepted Assertion traces to at least one persisted source/evidence record.
 
 ### G4 — Integrity
 
@@ -284,34 +288,35 @@ Contradictory claims from two sources do not silently overwrite one another. The
 
 ### G7 — Validation
 
-A deliberately malformed graph/record fails admission and cannot enter the accepted projection.
+A deliberately malformed ingress record and a deliberately SHACL-invalid graph both fail admission and cannot enter the accepted projection.
 
 ### G8 — Persistence
 
-After process restart, the durable state can be reconstructed and yields the same accepted projection digest.
+After process restart, state reconstructed from the durable projection yields the same canonical projection digest and provenance remains queryable.
 
-### G9 — Backend contract
+### G9 — Persistence contract
 
-For the selected persistence path, tests assert write-then-read postconditions through public interfaces. Return-value-only success is insufficient.
+Tests assert write-then-read postconditions for the canonical JSON projection, SQLite provenance store, and version snapshot store. A truthy return value alone is insufficient proof.
 
 ### G10 — Authority separation
 
-Read/query callers cannot create CanonicalFact, promote assertions, retract data, or invoke provider mutations.
+Read-facade callers cannot create CanonicalFact, promote assertions, retract data, purge data, or invoke provider mutations.
 
 ### G11 — Security boundary
 
-Negative authorization tests prove mutation interfaces are unavailable to the V1 read surface. No anonymous public Explorer deployment is part of the proof.
+Negative interface tests prove mutation operations are unavailable through the V1 read surface. No anonymous public Explorer deployment is part of the proof.
 
 ### G12 — Recovery
 
-A pre-change snapshot/digest and post-change snapshot/digest can be compared, and the accepted state can be deterministically reconstructed from source evidence.
+A pre-change snapshot/digest and post-change snapshot/digest can be compared, and the accepted state can be deterministically reconstructed from committed source evidence.
 
 ## Verification receipt
 
-A successful proof emits a machine-readable receipt containing at least:
+A proof run emits a machine-readable receipt containing at least:
 
 ```text
-semantica_version_or_sha
+semantica_version
+semantica_commit
 projection_contract_version
 source_corpus_digest
 canonical_projection_digest
@@ -319,20 +324,20 @@ provenance_integrity_status
 validation_status
 replay_run_1_digest
 replay_run_2_digest
-backend_identifier
+persistence_profile
 acceptance_gates
 created_at
 ```
 
-The receipt reports partial or failed gates explicitly. It must never translate unsupported, skipped, or unexecuted checks into PASS.
+The receipt reports partial or failed gates explicitly. Unsupported, skipped, or unexecuted checks cannot be translated into PASS.
 
 ## Implementation slices
 
-1. **Contract fixtures** — fixed corpus, deterministic identity function, semantic envelope, normative validation rules.
-2. **Projection adapter** — source -> provenance -> assertion/decision -> ContextGraph/durable projection.
-3. **Persistence/restart proof** — durable provenance + one persistence path.
+1. **Contract fixtures** — fixed corpus, deterministic identity function, Pydantic semantic envelope, normative SHACL shapes.
+2. **Projection adapter** — source -> provenance -> assertion/decision -> ContextGraph/canonical JSON projection.
+3. **Persistence/restart proof** — SQLite provenance + deterministic JSON projection + version snapshots.
 4. **Acceptance suite** — G1-G12 with observable postconditions.
-5. **Read gateway** — minimal query/explain interface; optional read-only MCP wrapper.
+5. **Read facade** — minimal query/explain interface with no mutation methods.
 6. **Receipt** — canonical machine-readable verification output.
 
 No later slice may weaken an earlier acceptance gate.
@@ -343,13 +348,13 @@ Stop and report BLOCKED rather than improvising if:
 
 - canonical identity cannot be made deterministic;
 - provenance persistence fails or silently falls back to memory;
-- the selected persistence backend cannot satisfy required read-after-write semantics;
+- deterministic serialization cannot reproduce the same projection digest;
 - replay creates unexplained duplicates;
-- validation cannot prevent malformed data from entering the accepted projection;
+- ingress or SHACL validation cannot prevent malformed data from entering the accepted projection;
 - a proposed interface would expose mutation authority through the V1 read surface.
 
 ## Completion definition
 
-V1 is COMPLETE only when all G1-G12 gates are executed and pass on the pinned Semantica baseline, and the verification receipt is reproducible from the committed corpus and configuration.
+V1 is COMPLETE only when all G1-G12 gates are executed and pass on Semantica `v0.6.5` commit `5b319560fb0b8403644b70bc592864418cdcc740`, and the verification receipt is reproducible from the committed corpus and configuration.
 
 Until then, Semantica remains a shadow projection and cannot be described as authoritative project truth.
