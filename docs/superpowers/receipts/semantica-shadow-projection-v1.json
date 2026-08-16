@@ -1,0 +1,26 @@
+{
+  "acceptance_gates": {
+    "G1": "PASS",
+    "G10": "PASS",
+    "G11": "PASS",
+    "G12": "PASS",
+    "G2": "PASS",
+    "G3": "PASS",
+    "G4": "PASS",
+    "G5": "PASS",
+    "G6": "PASS",
+    "G7": "PASS",
+    "G8": "PASS",
+    "G9": "PASS"
+  },
+  "backend_identifier": "json-projection+sqlite-provenance+sqlite-versions",
+  "canonical_projection_digest": "440f8efbd25167374e99da8d403560ccabe3dff118d4d9b774f0c11a74f3d781",
+  "created_at": "2026-08-16T04:14:58.496932Z",
+  "projection_contract_version": "shadow-projection/v1",
+  "provenance_integrity_status": "PASS",
+  "replay_run_1_digest": "440f8efbd25167374e99da8d403560ccabe3dff118d4d9b774f0c11a74f3d781",
+  "replay_run_2_digest": "440f8efbd25167374e99da8d403560ccabe3dff118d4d9b774f0c11a74f3d781",
+  "semantica_version_or_sha": "v0.6.5@5b319560fb0b8403644b70bc592864418cdcc740",
+  "source_corpus_digest": "f98928c67476bbc3fca8e4f1bedc5a2acb9090d921125e0adc9d461af40a51e9",
+  "validation_status": "PASS"
+}
