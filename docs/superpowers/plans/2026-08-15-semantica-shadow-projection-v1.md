@@ -2,216 +2,127 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a deterministic, read-first Semantica shadow projection that preserves provenance, conflicting assertions, temporal validity, validation, restart reproducibility, and explicit authority separation on the pinned Semantica v0.6.5 baseline.
+**Goal:** Build a deterministic, read-first Semantica shadow projection that preserves provenance, conflicting assertions, temporal validity, validation, restart reproducibility, and explicit authority separation on Semantica v0.6.5.
 
-**Architecture:** Implement the proof as an isolated integration package under `integrations/shadow_projection_v1/`, leaving Semantica core behavior unchanged. Raw source bytes are hashed first, source provenance is persisted through `ProvenanceManager(storage_path=...)`, strict source models produce deterministic assertion identities, the accepted projection is stored as canonical JSON, normative SHACL validates a staged graph before commit, `ContextGraph` is reconstructed only as a working/query view, and a G1-G12 verifier emits a machine-readable receipt.
+**Architecture:** Implement an isolated package under `integrations/shadow_projection_v1/`; do not change Semantica core. Hash raw evidence before semantic parsing, persist source provenance with `ProvenanceManager`, stage deterministic assertions in a canonical JSON projection, validate the staged graph with committed SHACL, persist assertion provenance before atomically committing accepted state, reconstruct `ContextGraph` only as a query/working view, and emit a G1-G12 verification receipt.
 
-**Tech Stack:** Python >=3.8, Semantica v0.6.5, Pydantic v2, `rdflib`, `pyshacl` through the existing `shacl` optional extra, SQLite-backed `ProvenanceManager`, SQLite-backed `TemporalVersionManager`, pytest.
+**Tech Stack:** Python >=3.8, Semantica v0.6.5 commit `5b319560fb0b8403644b70bc592864418cdcc740`, Pydantic v2, rdflib, pyshacl through `.[shacl]`, SQLite provenance, SQLite temporal snapshots, pytest.
 
 ## Global Constraints
 
-- Execution code MUST branch from Semantica v0.6.5 commit `5b319560fb0b8403644b70bc592864418cdcc740`.
-- Do NOT use `design/semantica-shadow-projection-v1` as the code baseline; that branch contains the approved documents but has newer upstream ancestry.
-- Implementation branch: `feat/semantica-shadow-projection-v1`.
-- Before code changes, copy the approved design and this plan into the implementation branch so the execution branch is self-contained.
-- Do not modify fork `main` during implementation.
-- Do not modify Semantica core modules. If a G1-G12 gate cannot be satisfied through public v0.6.5 APIs, stop BLOCKED and report the exact missing capability.
+- Implementation branch: `feat/semantica-shadow-projection-v1`, created **directly** from `5b319560fb0b8403644b70bc592864418cdcc740`.
+- `design/semantica-shadow-projection-v1` is documentation-only and MUST NOT be the code ancestor.
+- Copy the approved design and this plan onto the implementation branch before code changes.
+- Do not modify fork `main`.
+- Do not modify Semantica core. Stop `BLOCKED` if G1-G12 cannot be satisfied through v0.6.5 public APIs.
 - `ContextGraph` is a working/query graph, not durable authority.
-- Native `ContextGraph.retract_node()` / `retract_edge()` are not available in v0.6.5; V1 retraction closes `valid_until` in the durable projection and reconstructs the working graph.
-- V1 persistence is: canonical JSON projection + SQLite provenance + SQLite version snapshots.
-- No external graph/vector database, public Explorer deployment, MCP server, provider mutation, or unrestricted write tool is part of V1.
-- Normative graph constraints are committed SHACL. Generated ontology/shapes are not normative.
-- `CanonicalFact` has no V1 creation API. Therefore V1 cannot silently promote an assertion to canonical authority.
-- Every persistence/mutation test MUST verify a public read-after-write postcondition; truthy return values are insufficient.
-- Test environment: `python -m pip install -e ".[dev,shacl]"`.
+- v0.6.5 predates native `ContextGraph.retract_node()`/`retract_edge()`; V1 retraction closes `valid_until` in our durable store.
+- Persistence: deterministic canonical JSON + `ProvenanceManager(storage_path=...)` + `TemporalVersionManager(storage_path=...)`.
+- No external graph/vector service, Explorer deployment, MCP server, provider mutation, or production erasure workflow.
+- Normative constraints are committed SHACL. Generated ontology/shapes are non-normative.
+- There is no V1 `CanonicalFact` creation or promotion API.
+- Acceptance/mutation tests assert read-after-write postconditions, not truthy return values.
+- Accepted projection MUST never be committed before required assertion provenance persists successfully. Extra provenance for an admission-passed but commit-failed assertion is preferable to accepted state lacking provenance.
+- Install test environment with `python -m pip install -e ".[dev,shacl]"`.
 
----
-
-## File Structure
+## File Map
 
 ```text
 integrations/shadow_projection_v1/
-├── __init__.py
-├── identity.py
-├── models.py
-├── provenance.py
-├── store.py
-├── validation.py
-├── projector.py
-├── gateway.py
-├── verification.py
-└── shapes.ttl
+  __init__.py        public root: ReadGateway only
+  identity.py        canonical JSON, SHA-256, stable HTTPS identifiers
+  models.py          strict Pydantic source/projected/receipt models
+  provenance.py      persistent Semantica provenance wrapper
+  store.py           canonical JSON state, staging, conflicts, temporal filtering
+  validation.py      property graph -> RDF + SHACL validation
+  projector.py       ordered ingestion/admission/ContextGraph reconstruction
+  gateway.py         read-only query/explain interface
+  verification.py    G1-G12 runner and receipt writer
+  shapes.ttl         normative Assertion shape
 
 tests/integrations/shadow_projection_v1/
-├── __init__.py
-├── fixtures/
-│   ├── source_a.json
-│   ├── source_b_conflict.json
-│   └── malformed_source.json
-├── test_identity_models.py
-├── test_provenance.py
-├── test_store_projection.py
-├── test_validation.py
-├── test_projector_restart.py
-├── test_gateway_authority.py
-└── test_acceptance.py
+  fixtures/source_a.json
+  fixtures/source_b_conflict.json
+  fixtures/malformed_source.json
+  test_identity_models.py
+  test_provenance.py
+  test_store_projection.py
+  test_validation.py
+  test_projector_restart.py
+  test_gateway_authority.py
+  test_acceptance.py
 ```
-
-V1 deliberately omits MCP. G10/G11 are proven against the explicit `ReadGateway`; an MCP wrapper may later delegate only to that gateway.
 
 ---
 
-### Task 1: Deterministic identity, strict models, and fixed corpus
+### Task 1: Identity, strict models, and committed corpus
 
-**Files:**
-- Create: `integrations/shadow_projection_v1/__init__.py`
-- Create: `integrations/shadow_projection_v1/identity.py`
-- Create: `integrations/shadow_projection_v1/models.py`
-- Create: `tests/integrations/shadow_projection_v1/__init__.py`
-- Create: `tests/integrations/shadow_projection_v1/fixtures/source_a.json`
-- Create: `tests/integrations/shadow_projection_v1/fixtures/source_b_conflict.json`
-- Create: `tests/integrations/shadow_projection_v1/fixtures/malformed_source.json`
-- Create: `tests/integrations/shadow_projection_v1/test_identity_models.py`
+**Files:** create `identity.py`, `models.py`, package/test `__init__.py`, three fixture files, `test_identity_models.py`.
 
-**Interfaces:**
-- Produces: `canonical_json_bytes(value: Any) -> bytes`
-- Produces: `sha256_hex(value: Any) -> str`
-- Produces: `stable_uri(kind: str, stable_key: str, namespace: str = DEFAULT_NAMESPACE) -> str`
-- Produces: `evidence_uri_from_digest(content_digest: str, namespace: str = DEFAULT_NAMESPACE) -> str`
-- Produces models: `SourceEnvelope`, `SourceRecord`, `RawAssertion`, `EvidenceRecord`, `AssertionRecord`, `DecisionRecord`, `ProjectionReceipt`
+**Produces:**
 
-- [ ] **Step 1: Add the fixed source corpus**
+```python
+canonical_json_bytes(value: Any) -> bytes
+sha256_hex(value: Any) -> str
+stable_uri(kind: str, stable_key: str, namespace: str = DEFAULT_NAMESPACE) -> str
+evidence_uri_from_digest(content_digest: str, namespace: str = DEFAULT_NAMESPACE) -> str
+```
+
+Models: `SourceEnvelope`, `SourceRecord`, `RawAssertion`, `EvidenceRecord`, `AssertionRecord`, `DecisionRecord`, `ProjectionReceipt`.
+
+- [ ] **Step 1: Commit the fixed corpus**
 
 `source_a.json`:
 
 ```json
-{
-  "source_id": "ops-state-a",
-  "source_version": "commit-a1",
-  "observed_at": "2026-08-15T20:00:00Z",
-  "records": [
-    {
-      "canonical_key": "workstream:ws-1",
-      "resource_type": "Workstream",
-      "assertions": [
-        {
-          "predicate": "status",
-          "value": "COMPLETE",
-          "confidence": 1.0,
-          "authority_class": "authoritative_source",
-          "valid_from": "2026-08-15T20:00:00Z",
-          "valid_until": null
-        }
-      ]
-    }
-  ]
-}
+{"source_id":"ops-state-a","source_version":"commit-a1","observed_at":"2026-08-15T20:00:00Z","records":[{"canonical_key":"workstream:ws-1","resource_type":"Workstream","assertions":[{"predicate":"status","value":"COMPLETE","confidence":1.0,"authority_class":"authoritative_source","valid_from":"2026-08-15T20:00:00Z","valid_until":null}]}]}
 ```
 
 `source_b_conflict.json`:
 
 ```json
-{
-  "source_id": "provider-observation-b",
-  "source_version": "snapshot-b1",
-  "observed_at": "2026-08-15T20:05:00Z",
-  "records": [
-    {
-      "canonical_key": "workstream:ws-1",
-      "resource_type": "Workstream",
-      "assertions": [
-        {
-          "predicate": "status",
-          "value": "BLOCKED",
-          "confidence": 0.95,
-          "authority_class": "provider_observation",
-          "valid_from": "2026-08-15T20:05:00Z",
-          "valid_until": null
-        }
-      ]
-    }
-  ]
-}
+{"source_id":"provider-observation-b","source_version":"snapshot-b1","observed_at":"2026-08-15T20:05:00Z","records":[{"canonical_key":"workstream:ws-1","resource_type":"Workstream","assertions":[{"predicate":"status","value":"BLOCKED","confidence":0.95,"authority_class":"provider_observation","valid_from":"2026-08-15T20:05:00Z","valid_until":null}]}]}
 ```
 
-`malformed_source.json`:
+`malformed_source.json` intentionally omits `predicate`:
 
 ```json
-{
-  "source_id": "bad-source",
-  "source_version": "bad-1",
-  "observed_at": "2026-08-15T20:10:00Z",
-  "records": [
-    {
-      "canonical_key": "workstream:ws-bad",
-      "resource_type": "Workstream",
-      "assertions": [
-        {
-          "value": "COMPLETE",
-          "confidence": 1.0,
-          "authority_class": "authoritative_source"
-        }
-      ]
-    }
-  ]
-}
+{"source_id":"bad-source","source_version":"bad-1","observed_at":"2026-08-15T20:10:00Z","records":[{"canonical_key":"workstream:ws-bad","resource_type":"Workstream","assertions":[{"value":"COMPLETE","confidence":1.0,"authority_class":"authoritative_source"}]}]}
 ```
 
-- [ ] **Step 2: Write failing identity/model tests**
+- [ ] **Step 2: Write failing model/identity tests**
 
 ```python
 from pathlib import Path
-
 import pytest
 from pydantic import ValidationError
-
-from integrations.shadow_projection_v1.identity import (
-    evidence_uri_from_digest,
-    sha256_hex,
-    stable_uri,
-)
+from integrations.shadow_projection_v1.identity import evidence_uri_from_digest, sha256_hex, stable_uri
 from integrations.shadow_projection_v1.models import SourceEnvelope
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def test_stable_uri_is_deterministic():
-    first = stable_uri("resource", "workstream:ws-1")
-    second = stable_uri("resource", "workstream:ws-1")
-    assert first == second
-    assert first == "https://id.example.invalid/resource/workstream%3Aws-1"
-
-
-def test_evidence_uri_has_digest_path_segment():
-    assert evidence_uri_from_digest("abc123") == (
-        "https://id.example.invalid/evidence/sha256/abc123"
-    )
-
-
-def test_sha256_hex_is_order_independent_for_mapping_keys():
+def test_identity_is_stable():
+    assert stable_uri("resource", "workstream:ws-1") == "https://id.example.invalid/resource/workstream%3Aws-1"
     assert sha256_hex({"b": 2, "a": 1}) == sha256_hex({"a": 1, "b": 2})
+    assert evidence_uri_from_digest("abc123") == "https://id.example.invalid/evidence/sha256/abc123"
 
 
-def test_source_envelope_rejects_missing_assertion_predicate():
-    payload = (FIXTURES / "malformed_source.json").read_text(encoding="utf-8")
+def test_bad_source_is_rejected():
     with pytest.raises(ValidationError):
-        SourceEnvelope.model_validate_json(payload)
+        SourceEnvelope.model_validate_json((FIXTURES / "malformed_source.json").read_text())
 ```
 
-- [ ] **Step 3: Run tests and confirm RED**
+- [ ] **Step 3: Run RED**
 
 ```bash
 pytest tests/integrations/shadow_projection_v1/test_identity_models.py -v
 ```
 
-Expected: import/collection failure because the integration package does not exist.
-
-- [ ] **Step 4: Implement deterministic identity functions**
+- [ ] **Step 4: Implement identity functions**
 
 ```python
-# integrations/shadow_projection_v1/identity.py
-import hashlib
-import json
+import hashlib, json
 from typing import Any
 from urllib.parse import quote
 
@@ -219,12 +130,7 @@ DEFAULT_NAMESPACE = "https://id.example.invalid"
 
 
 def canonical_json_bytes(value: Any) -> bytes:
-    return json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    ).encode("utf-8")
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
 def sha256_hex(value: Any) -> str:
@@ -235,126 +141,52 @@ def sha256_hex(value: Any) -> str:
 def stable_uri(kind: str, stable_key: str, namespace: str = DEFAULT_NAMESPACE) -> str:
     if not kind or not stable_key:
         raise ValueError("kind and stable_key are required")
-    return "%s/%s/%s" % (
-        namespace.rstrip("/"),
-        quote(kind, safe=""),
-        quote(stable_key, safe=""),
-    )
+    return "%s/%s/%s" % (namespace.rstrip("/"), quote(kind, safe=""), quote(stable_key, safe=""))
 
 
-def evidence_uri_from_digest(
-    content_digest: str, namespace: str = DEFAULT_NAMESPACE
-) -> str:
+def evidence_uri_from_digest(content_digest: str, namespace: str = DEFAULT_NAMESPACE) -> str:
     if not content_digest:
         raise ValueError("content_digest is required")
-    return "%s/evidence/sha256/%s" % (
-        namespace.rstrip("/"),
-        quote(content_digest, safe=""),
-    )
+    return "%s/evidence/sha256/%s" % (namespace.rstrip("/"), quote(content_digest, safe=""))
 ```
 
-- [ ] **Step 5: Implement all strict Pydantic models**
+- [ ] **Step 5: Implement strict models**
+
+Use `ConfigDict(extra="forbid")`. `RawAssertion` and `AssertionRecord` validate `valid_until >= valid_from`. Exact projected fields:
 
 ```python
-# integrations/shadow_projection_v1/models.py
-from datetime import datetime
-from enum import Enum
-from typing import Any, Dict, List, Literal, Optional
-
-from pydantic import BaseModel, ConfigDict, Field, model_validator
-
-
-class AuthorityClass(str, Enum):
-    AUTHORITATIVE_SOURCE = "authoritative_source"
-    PROVIDER_OBSERVATION = "provider_observation"
-    DERIVED = "derived"
-    PROPOSED = "proposed"
-
-
-class RawAssertion(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    predicate: str = Field(min_length=1)
-    value: Any
-    confidence: float = Field(ge=0.0, le=1.0)
-    authority_class: AuthorityClass
-    valid_from: Optional[datetime] = None
-    valid_until: Optional[datetime] = None
-
-    @model_validator(mode="after")
-    def validate_interval(self):
-        if (
-            self.valid_from is not None
-            and self.valid_until is not None
-            and self.valid_until < self.valid_from
-        ):
-            raise ValueError("valid_until cannot precede valid_from")
-        return self
-
-
-class SourceRecord(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    canonical_key: str = Field(min_length=1)
-    resource_type: str = Field(min_length=1)
-    assertions: List[RawAssertion] = Field(min_length=1)
-
-
-class SourceEnvelope(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    source_id: str = Field(min_length=1)
-    source_version: str = Field(min_length=1)
-    observed_at: datetime
-    records: List[SourceRecord] = Field(min_length=1)
-
-
 class EvidenceRecord(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    evidence_uri: str = Field(min_length=1)
-    source_uri: str = Field(min_length=1)
-    source_id: str = Field(min_length=1)
-    source_version: str = Field(min_length=1)
-    content_digest: str = Field(min_length=1)
+    evidence_uri: str
+    source_uri: str
+    source_id: str
+    source_version: str
+    content_digest: str
     observed_at: datetime
-
 
 class AssertionRecord(BaseModel):
-    model_config = ConfigDict(extra="forbid")
     record_type: Literal["Assertion"] = "Assertion"
-    assertion_uri: str = Field(min_length=1)
-    canonical_uri: str = Field(min_length=1)
-    predicate: str = Field(min_length=1)
+    assertion_uri: str
+    canonical_uri: str
+    predicate: str
     value: Any
-    evidence_uri: str = Field(min_length=1)
+    evidence_uri: str
     observed_at: datetime
     valid_from: Optional[datetime] = None
     valid_until: Optional[datetime] = None
     confidence: float = Field(ge=0.0, le=1.0)
     authority_class: AuthorityClass
 
-    @model_validator(mode="after")
-    def validate_interval(self):
-        if (
-            self.valid_from is not None
-            and self.valid_until is not None
-            and self.valid_until < self.valid_from
-        ):
-            raise ValueError("valid_until cannot precede valid_from")
-        return self
-
-
 class DecisionRecord(BaseModel):
-    model_config = ConfigDict(extra="forbid")
     record_type: Literal["Decision"] = "Decision"
-    decision_uri: str = Field(min_length=1)
-    decision_maker: str = Field(min_length=1)
-    scenario: str = Field(min_length=1)
-    reasoning: str = Field(min_length=1)
-    outcome: str = Field(min_length=1)
+    decision_uri: str
+    decision_maker: str
+    scenario: str
+    reasoning: str
+    outcome: str
     confidence: float = Field(ge=0.0, le=1.0)
     observed_at: datetime
 
-
 class ProjectionReceipt(BaseModel):
-    model_config = ConfigDict(extra="forbid")
     semantica_version_or_sha: str
     projection_contract_version: str
     source_corpus_digest: str
@@ -368,110 +200,65 @@ class ProjectionReceipt(BaseModel):
     created_at: datetime
 ```
 
-- [ ] **Step 6: Run tests and confirm GREEN**
+`SourceEnvelope` requires non-empty `source_id`, `source_version`, `records`; `SourceRecord` requires non-empty `canonical_key`, `resource_type`, `assertions`; `RawAssertion` requires `predicate`, JSON value, bounded confidence and `authority_class`.
+
+- [ ] **Step 6: Run GREEN and commit**
 
 ```bash
 pytest tests/integrations/shadow_projection_v1/test_identity_models.py -v
-```
-
-Expected: all tests PASS.
-
-- [ ] **Step 7: Commit**
-
-```bash
 git add integrations/shadow_projection_v1 tests/integrations/shadow_projection_v1
 git commit -m "feat: add deterministic shadow projection contracts"
 ```
 
 ---
 
-### Task 2: Persistent provenance with idempotent evidence/assertion recording
+### Task 2: Persistent, idempotent provenance
 
-**Files:**
-- Create: `integrations/shadow_projection_v1/provenance.py`
-- Create: `tests/integrations/shadow_projection_v1/test_provenance.py`
+**Files:** create `provenance.py`, `test_provenance.py`.
 
-**Interfaces:**
-- Consumes: `EvidenceRecord`, `AssertionRecord`
-- Produces: `PersistentProvenance(path: Path)`
-- Produces: `record_evidence(evidence: EvidenceRecord) -> None`
-- Produces: `record_assertion(assertion: AssertionRecord) -> None`
-- Produces: `lineage(entity_uri: str) -> Dict[str, Any]`
-- Produces: `verify() -> Dict[str, Any]`
+**Produces:** `PersistentProvenance(path)`, `.record_evidence()`, `.record_assertion()`, `.lineage()`, `.verify()`.
 
 - [ ] **Step 1: Write failing restart/idempotency tests**
 
 ```python
-from pathlib import Path
-
-from integrations.shadow_projection_v1.models import EvidenceRecord
-from integrations.shadow_projection_v1.provenance import PersistentProvenance
-
-
-def _evidence() -> EvidenceRecord:
-    return EvidenceRecord(
-        evidence_uri="https://id.example.invalid/evidence/sha256/abc123",
-        source_uri="https://id.example.invalid/source/ops-state-a",
-        source_id="ops-state-a",
-        source_version="commit-a1",
-        content_digest="abc123",
-        observed_at="2026-08-15T20:00:00Z",
-    )
-
-
-def test_provenance_survives_restart(tmp_path: Path):
+def test_provenance_survives_restart(tmp_path):
     db = tmp_path / "provenance.db"
     first = PersistentProvenance(db)
-    first.record_evidence(_evidence())
-    assert first.verify()["valid"] is True
-
+    first.record_evidence(EVIDENCE)
     second = PersistentProvenance(db)
-    lineage = second.lineage(_evidence().evidence_uri)
-    assert lineage["entity_id"] == _evidence().evidence_uri
-    assert lineage["integrity_verified"] is True
+    assert second.lineage(EVIDENCE.evidence_uri)["integrity_verified"] is True
     assert second.verify()["valid"] is True
 
 
-def test_replaying_same_evidence_does_not_append_version(tmp_path: Path):
-    db = tmp_path / "provenance.db"
-    prov = PersistentProvenance(db)
-    prov.record_evidence(_evidence())
+def test_same_evidence_is_idempotent(tmp_path):
+    prov = PersistentProvenance(tmp_path / "provenance.db")
+    prov.record_evidence(EVIDENCE)
     before = prov.verify()["total_entries"]
-    prov.record_evidence(_evidence())
-    after = prov.verify()["total_entries"]
-    assert after == before
+    prov.record_evidence(EVIDENCE)
+    assert prov.verify()["total_entries"] == before
 ```
 
-- [ ] **Step 2: Run tests and confirm RED**
+`EVIDENCE` is an explicit `EvidenceRecord` using `https://id.example.invalid/evidence/sha256/abc123` and observed time `2026-08-15T20:00:00Z`.
+
+- [ ] **Step 2: Run RED**
 
 ```bash
 pytest tests/integrations/shadow_projection_v1/test_provenance.py -v
 ```
 
-Expected: import failure for `PersistentProvenance`.
-
-- [ ] **Step 3: Implement the public-API provenance wrapper**
+- [ ] **Step 3: Implement wrapper using Semantica public manager methods**
 
 ```python
-# integrations/shadow_projection_v1/provenance.py
-from pathlib import Path
-from typing import Any, Dict
-
-from semantica.provenance import ProvenanceManager
-
-from .models import AssertionRecord, EvidenceRecord
-
-
 class PersistentProvenance:
-    def __init__(self, path: Path):
+    def __init__(self, path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.manager = ProvenanceManager(storage_path=str(self.path))
 
-    def lineage(self, entity_uri: str) -> Dict[str, Any]:
+    def lineage(self, entity_uri):
         return self.manager.get_lineage(entity_uri)
 
-    def record_evidence(self, evidence: EvidenceRecord) -> None:
+    def record_evidence(self, evidence):
         if self.lineage(evidence.evidence_uri):
             return
         entry = self.manager.track_entity(
@@ -480,17 +267,12 @@ class PersistentProvenance:
             entity_type="Evidence",
             activity_id="shadow_projection_source_capture",
             agent_id="shadow_projection_v1",
-            metadata={
-                "source_id": evidence.source_id,
-                "source_version": evidence.source_version,
-                "content_digest": evidence.content_digest,
-                "observed_at": evidence.observed_at.isoformat(),
-            },
+            metadata=evidence.model_dump(mode="json"),
         )
         if entry is None:
             raise RuntimeError("persistent evidence provenance write failed")
 
-    def record_assertion(self, assertion: AssertionRecord) -> None:
+    def record_assertion(self, assertion):
         if self.lineage(assertion.assertion_uri):
             return
         entry = self.manager.track_entity(
@@ -500,361 +282,145 @@ class PersistentProvenance:
             activity_id="shadow_projection_assertion_projection",
             agent_id="shadow_projection_v1",
             parent_entity_id=assertion.evidence_uri,
-            valid_from=(
-                assertion.valid_from.isoformat() if assertion.valid_from else None
-            ),
-            valid_until=(
-                assertion.valid_until.isoformat() if assertion.valid_until else None
-            ),
+            valid_from=assertion.valid_from.isoformat() if assertion.valid_from else None,
+            valid_until=assertion.valid_until.isoformat() if assertion.valid_until else None,
             metadata=assertion.model_dump(mode="json"),
         )
         if entry is None:
             raise RuntimeError("persistent assertion provenance write failed")
 
-    def verify(self) -> Dict[str, Any]:
+    def verify(self):
         return self.manager.verify_chain()
 ```
 
-- [ ] **Step 4: Run tests and confirm GREEN**
+- [ ] **Step 4: Run GREEN and commit**
 
 ```bash
 pytest tests/integrations/shadow_projection_v1/test_provenance.py -v
-```
-
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
 git add integrations/shadow_projection_v1/provenance.py tests/integrations/shadow_projection_v1/test_provenance.py
 git commit -m "feat: persist shadow projection provenance"
 ```
 
 ---
 
-### Task 3: Deterministic durable projection, conflicts, staging, and temporal filtering
+### Task 3: Canonical projection store, staging, conflicts, and temporal filtering
 
-**Files:**
-- Create: `integrations/shadow_projection_v1/store.py`
-- Create: `tests/integrations/shadow_projection_v1/test_store_projection.py`
+**Files:** create `store.py`, `test_store_projection.py`.
 
-**Interfaces:**
-- Produces: `ProjectionStore(path: Optional[Path] = None)`
-- Produces: `clone() -> ProjectionStore` (in-memory deep copy)
-- Produces: `commit_from(staged: ProjectionStore) -> None`
-- Produces: `upsert_resource(canonical_uri: str, resource_type: str) -> None`
-- Produces: `add_assertion(assertion: AssertionRecord) -> None`
-- Produces: `retract_assertion(assertion_uri: str, valid_until: datetime) -> None`
-- Produces: `active_assertions(at_time: datetime) -> List[AssertionRecord]`
-- Produces: `conflicts() -> List[Dict[str, Any]]`
-- Produces: `graph_dict(at_time: Optional[datetime] = None) -> Dict[str, Any]`
-- Produces: `digest() -> str`
+**Produces:** `ProjectionStore(path=None)`, `.clone()`, `.commit_from()`, `.upsert_resource()`, `.add_assertion()`, `.retract_assertion()`, `.active_assertions()`, `.conflicts()`, `.graph_dict(at_time=None)`, `.digest()`.
 
-**Semantics:** `graph_dict()` with `at_time=None` returns the full accepted historical projection. Supplying `at_time` returns only assertions active at that explicit instant. `digest()` always hashes the full accepted historical projection and therefore never depends on wall-clock time.
+**Contract:** `graph_dict(None)` returns full accepted history. `graph_dict(explicit_datetime)` filters assertions by validity at that instant. `digest()` always hashes full history, never wall-clock-dependent state.
 
-- [ ] **Step 1: Write failing deterministic/conflict/temporal tests**
+- [ ] **Step 1: Write RED tests** proving: two conflicting status values remain; retraction is visible before 20:10Z and absent after; restarting from JSON yields the same digest; re-reading after every mutation returns the exact stored model.
 
-```python
-from datetime import datetime, timezone
-from pathlib import Path
-
-from integrations.shadow_projection_v1.models import AssertionRecord
-from integrations.shadow_projection_v1.store import ProjectionStore
-
-RESOURCE = "https://id.example.invalid/resource/workstream%3Aws-1"
-
-
-def _assertion(uri: str, value: str, evidence: str, valid_from: str) -> AssertionRecord:
-    return AssertionRecord(
-        assertion_uri=uri,
-        canonical_uri=RESOURCE,
-        predicate="status",
-        value=value,
-        evidence_uri=evidence,
-        observed_at=valid_from,
-        valid_from=valid_from,
-        valid_until=None,
-        confidence=1.0,
-        authority_class="authoritative_source",
-    )
-
-
-def test_conflicting_values_are_preserved(tmp_path: Path):
-    store = ProjectionStore(tmp_path / "projection.json")
-    store.upsert_resource(RESOURCE, "Workstream")
-    store.add_assertion(_assertion(
-        "https://id.example.invalid/assertion/a",
-        "COMPLETE",
-        "https://id.example.invalid/evidence/sha256/a",
-        "2026-08-15T20:00:00Z",
-    ))
-    store.add_assertion(_assertion(
-        "https://id.example.invalid/assertion/b",
-        "BLOCKED",
-        "https://id.example.invalid/evidence/sha256/b",
-        "2026-08-15T20:05:00Z",
-    ))
-    assert len(store.conflicts()) == 1
-    active = store.active_assertions(
-        datetime(2026, 8, 15, 20, 6, tzinfo=timezone.utc)
-    )
-    assert {item.value for item in active} == {"COMPLETE", "BLOCKED"}
-
-
-def test_retraction_closes_current_view_but_preserves_history(tmp_path: Path):
-    store = ProjectionStore(tmp_path / "projection.json")
-    store.upsert_resource(RESOURCE, "Workstream")
-    uri = "https://id.example.invalid/assertion/a"
-    store.add_assertion(_assertion(
-        uri,
-        "COMPLETE",
-        "https://id.example.invalid/evidence/sha256/a",
-        "2026-08-15T20:00:00Z",
-    ))
-    store.retract_assertion(
-        uri, datetime(2026, 8, 15, 20, 10, tzinfo=timezone.utc)
-    )
-    restarted = ProjectionStore(tmp_path / "projection.json")
-    assert len(restarted.active_assertions(
-        datetime(2026, 8, 15, 20, 5, tzinfo=timezone.utc)
-    )) == 1
-    assert len(restarted.active_assertions(
-        datetime(2026, 8, 15, 20, 11, tzinfo=timezone.utc)
-    )) == 0
-    assert any(node["id"] == uri for node in restarted.graph_dict()["nodes"])
-
-
-def test_restart_preserves_same_projection_digest(tmp_path: Path):
-    path = tmp_path / "projection.json"
-    first = ProjectionStore(path)
-    first.upsert_resource(RESOURCE, "Workstream")
-    first.add_assertion(_assertion(
-        "https://id.example.invalid/assertion/a",
-        "COMPLETE",
-        "https://id.example.invalid/evidence/sha256/a",
-        "2026-08-15T20:00:00Z",
-    ))
-    digest = first.digest()
-    second = ProjectionStore(path)
-    assert second.digest() == digest
-```
-
-- [ ] **Step 2: Run tests and confirm RED**
+- [ ] **Step 2: Run RED**
 
 ```bash
 pytest tests/integrations/shadow_projection_v1/test_store_projection.py -v
 ```
 
-Expected: import failure for `ProjectionStore`.
+- [ ] **Step 3: Implement deterministic state**
 
-- [ ] **Step 3: Implement store state and deterministic serialization**
-
-Internal JSON shape:
+Persist exact top-level shape:
 
 ```json
-{
-  "contract": "shadow-projection/v1",
-  "resources": [],
-  "assertions": []
-}
+{"contract":"shadow-projection/v1","resources":[],"assertions":[]}
 ```
 
-Requirements:
+In memory:
 
 ```python
-# store.py behavioral core
-self.resources = {}   # canonical_uri -> {"canonical_uri", "resource_type"}
+self.resources = {}   # canonical_uri -> {canonical_uri, resource_type}
 self.assertions = {}  # assertion_uri -> AssertionRecord
 ```
 
-`_flush()` serializes resources sorted by `canonical_uri` and assertions sorted by `assertion_uri`, writes to `<projection>.tmp`, then calls `os.replace(tmp, projection)`.
+Sort resources by `canonical_uri`, assertions by `assertion_uri`; `_flush()` writes `<path>.tmp` then `os.replace`. `clone()` deep-copies into `ProjectionStore(None)`. `commit_from()` deep-copies staged state then performs one atomic `_flush()`.
 
-`add_assertion()` is idempotent when the exact same serialized assertion already exists; if an existing `assertion_uri` has different content, raise `ValueError("assertion identity collision")`.
+`add_assertion()` is idempotent for byte-equivalent model dumps and raises `ValueError("assertion identity collision")` if the same URI maps to different content.
 
-`clone()` creates `ProjectionStore(None)` and deep-copies both dictionaries. `commit_from(staged)` deep-copies staged dictionaries into the persistent store and calls `_flush()` exactly once.
-
-- [ ] **Step 4: Implement explicit conflict and temporal logic**
-
-A conflict groups active or historical assertions by `(canonical_uri, predicate)` and returns a conflict only when at least two distinct canonical JSON values exist. Each conflict dictionary is:
+- [ ] **Step 4: Implement conflict/temporal rules**
 
 ```python
-{
-    "canonical_uri": canonical_uri,
-    "predicate": predicate,
-    "assertion_uris": sorted(assertion_uris),
-    "values": sorted(values_as_canonical_json_strings),
-}
+active = (
+    (a.valid_from is None or a.valid_from <= at_time)
+    and (a.valid_until is None or at_time < a.valid_until)
+)
 ```
 
-An assertion is active at `at_time` iff:
+Conflict key is `(canonical_uri, predicate)`; emit a conflict only when canonical JSON values differ. `retract_assertion()` rejects unknown URI or closure before `valid_from`, updates `valid_until`, flushes, and tests reopen the store to verify.
 
-```python
-start_ok = assertion.valid_from is None or assertion.valid_from <= at_time
-end_ok = assertion.valid_until is None or at_time < assertion.valid_until
-active = start_ok and end_ok
-```
+- [ ] **Step 5: Implement property graph projection**
 
-`retract_assertion()` must reject unknown IDs and reject a `valid_until` earlier than `valid_from`; it then persists and is verified by reconstructing a new `ProjectionStore` in tests.
+Each resource is one node. Each assertion is one `Assertion` node with `AssertionRecord.model_dump(mode="json")` metadata plus one deterministic `ABOUT` edge to its resource. Sort nodes by `id`; edges by `(source,type,target,id)`.
 
-- [ ] **Step 5: Implement deterministic property-graph projection**
-
-Every resource becomes one node. Every assertion becomes one node plus one `ABOUT` edge to the resource. Assertion node metadata is exactly `AssertionRecord.model_dump(mode="json")`. Sort nodes by `id` and edges by `(source, type, target, id)`.
-
-- [ ] **Step 6: Run tests and confirm GREEN**
+- [ ] **Step 6: Run GREEN and commit**
 
 ```bash
 pytest tests/integrations/shadow_projection_v1/test_store_projection.py -v
-```
-
-Expected: PASS.
-
-- [ ] **Step 7: Commit**
-
-```bash
 git add integrations/shadow_projection_v1/store.py tests/integrations/shadow_projection_v1/test_store_projection.py
 git commit -m "feat: add deterministic temporal projection store"
 ```
 
 ---
 
-### Task 4: Normative SHACL admission gate
+### Task 4: Normative SHACL admission
 
-**Files:**
-- Create: `integrations/shadow_projection_v1/shapes.ttl`
-- Create: `integrations/shadow_projection_v1/validation.py`
-- Create: `tests/integrations/shadow_projection_v1/test_validation.py`
+**Files:** create `shapes.ttl`, `validation.py`, `test_validation.py`.
 
-**Interfaces:**
-- Produces: `ValidationResult(conforms: bool, report_text: str)`
-- Produces: `graph_to_rdf(graph_dict: Dict[str, Any]) -> rdflib.Graph`
-- Produces: `validate_graph(graph_dict: Dict[str, Any]) -> ValidationResult`
-
-- [ ] **Step 1: Add normative V1 SHACL**
+- [ ] **Step 1: Commit this shape**
 
 ```turtle
 @prefix sh: <http://www.w3.org/ns/shacl#> .
 @prefix sqn: <https://id.example.invalid/schema/> .
 
-sqn:AssertionShape
-    a sh:NodeShape ;
-    sh:targetClass sqn:Assertion ;
-    sh:property [ sh:path sqn:subject ; sh:minCount 1 ; sh:maxCount 1 ] ;
-    sh:property [ sh:path sqn:predicate ; sh:minCount 1 ; sh:maxCount 1 ] ;
-    sh:property [ sh:path sqn:value ; sh:minCount 1 ; sh:maxCount 1 ] ;
-    sh:property [ sh:path sqn:evidence ; sh:minCount 1 ; sh:maxCount 1 ] .
+sqn:AssertionShape a sh:NodeShape ;
+  sh:targetClass sqn:Assertion ;
+  sh:property [ sh:path sqn:subject ; sh:minCount 1 ; sh:maxCount 1 ] ;
+  sh:property [ sh:path sqn:predicate ; sh:minCount 1 ; sh:maxCount 1 ] ;
+  sh:property [ sh:path sqn:value ; sh:minCount 1 ; sh:maxCount 1 ] ;
+  sh:property [ sh:path sqn:evidence ; sh:minCount 1 ; sh:maxCount 1 ] .
 ```
 
-- [ ] **Step 2: Write failing SHACL tests with an explicit fixture**
+- [ ] **Step 2: Write RED tests** with an explicit two-node/one-edge valid graph and a deep-copied graph where `evidence_uri` is removed. Require valid graph `conforms=True`; broken graph `conforms=False` and report contains `evidence`.
 
-```python
-import copy
-
-from integrations.shadow_projection_v1.validation import validate_graph
-
-
-def _valid_graph():
-    resource = "https://id.example.invalid/resource/workstream%3Aws-1"
-    assertion = "https://id.example.invalid/assertion/a"
-    evidence = "https://id.example.invalid/evidence/sha256/a"
-    return {
-        "nodes": [
-            {"id": resource, "type": "Workstream", "content": resource},
-            {
-                "id": assertion,
-                "type": "Assertion",
-                "content": "status=COMPLETE",
-                "metadata": {
-                    "record_type": "Assertion",
-                    "assertion_uri": assertion,
-                    "canonical_uri": resource,
-                    "predicate": "status",
-                    "value": "COMPLETE",
-                    "evidence_uri": evidence,
-                    "observed_at": "2026-08-15T20:00:00Z",
-                    "valid_from": "2026-08-15T20:00:00Z",
-                    "valid_until": None,
-                    "confidence": 1.0,
-                    "authority_class": "authoritative_source"
-                }
-            }
-        ],
-        "edges": [
-            {
-                "id": "about-a",
-                "source": assertion,
-                "target": resource,
-                "type": "ABOUT",
-                "weight": 1.0
-            }
-        ]
-    }
-
-
-def test_valid_assertion_graph_conforms():
-    assert validate_graph(_valid_graph()).conforms is True
-
-
-def test_missing_evidence_fails_admission():
-    broken = copy.deepcopy(_valid_graph())
-    assertion = next(node for node in broken["nodes"] if node["type"] == "Assertion")
-    assertion["metadata"].pop("evidence_uri")
-    result = validate_graph(broken)
-    assert result.conforms is False
-    assert "evidence" in result.report_text.lower()
-```
-
-- [ ] **Step 3: Run tests and confirm RED**
+- [ ] **Step 3: Run RED**
 
 ```bash
 pytest tests/integrations/shadow_projection_v1/test_validation.py -v
 ```
 
-Expected: import failure for validation module.
-
-- [ ] **Step 4: Implement RDF translation and SHACL validation**
+- [ ] **Step 4: Implement validator**
 
 ```python
-# integrations/shadow_projection_v1/validation.py
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Dict
-
-from pyshacl import validate
-from rdflib import Graph, Literal, Namespace, RDF, URIRef
-
-SQN = Namespace("https://id.example.invalid/schema/")
-
-
 @dataclass(frozen=True)
 class ValidationResult:
     conforms: bool
     report_text: str
 
 
-def graph_to_rdf(graph_dict: Dict[str, Any]) -> Graph:
-    graph = Graph()
+def graph_to_rdf(graph_dict):
+    g = Graph()
     for node in graph_dict.get("nodes", []):
         if node.get("type") != "Assertion":
             continue
-        metadata = node.get("metadata", {})
-        assertion_uri = URIRef(node["id"])
-        graph.add((assertion_uri, RDF.type, SQN.Assertion))
-        if metadata.get("canonical_uri"):
-            graph.add((assertion_uri, SQN.subject, URIRef(metadata["canonical_uri"])))
-        if metadata.get("predicate"):
-            graph.add((assertion_uri, SQN.predicate, Literal(metadata["predicate"])))
-        if "value" in metadata:
-            graph.add((assertion_uri, SQN.value, Literal(metadata["value"])))
-        if metadata.get("evidence_uri"):
-            graph.add((assertion_uri, SQN.evidence, URIRef(metadata["evidence_uri"])))
-    return graph
+        m = node.get("metadata", {})
+        u = URIRef(node["id"])
+        g.add((u, RDF.type, SQN.Assertion))
+        if m.get("canonical_uri"):
+            g.add((u, SQN.subject, URIRef(m["canonical_uri"])))
+        if m.get("predicate"):
+            g.add((u, SQN.predicate, Literal(m["predicate"])))
+        if "value" in m:
+            g.add((u, SQN.value, Literal(m["value"])))
+        if m.get("evidence_uri"):
+            g.add((u, SQN.evidence, URIRef(m["evidence_uri"])))
+    return g
 
 
-def validate_graph(graph_dict: Dict[str, Any]) -> ValidationResult:
-    shapes_path = Path(__file__).with_name("shapes.ttl")
+def validate_graph(graph_dict):
     conforms, _report_graph, report_text = validate(
         data_graph=graph_to_rdf(graph_dict),
-        shacl_graph=str(shapes_path),
+        shacl_graph=str(Path(__file__).with_name("shapes.ttl")),
         inference="none",
         abort_on_first=False,
         allow_infos=False,
@@ -863,209 +429,101 @@ def validate_graph(graph_dict: Dict[str, Any]) -> ValidationResult:
     return ValidationResult(bool(conforms), str(report_text))
 ```
 
-- [ ] **Step 5: Run tests and confirm GREEN**
+- [ ] **Step 5: Run GREEN and commit**
 
 ```bash
 pytest tests/integrations/shadow_projection_v1/test_validation.py -v
-```
-
-Expected: PASS.
-
-- [ ] **Step 6: Commit**
-
-```bash
 git add integrations/shadow_projection_v1/shapes.ttl integrations/shadow_projection_v1/validation.py tests/integrations/shadow_projection_v1/test_validation.py
 git commit -m "feat: gate shadow projection with normative SHACL"
 ```
 
 ---
 
-### Task 5: Ordered projector, ContextGraph reconstruction, and persistent snapshots
+### Task 5: Ordered projector, provenance-before-commit, ContextGraph reconstruction, snapshots
 
-**Files:**
-- Create: `integrations/shadow_projection_v1/projector.py`
-- Create: `tests/integrations/shadow_projection_v1/test_projector_restart.py`
+**Files:** create `projector.py`, `test_projector_restart.py`.
 
-**Interfaces:**
-- Produces: `ProjectionEngine(projection_path: Path, provenance_path: Path, versions_path: Path)`
-- Produces: `project_file(path: Path) -> str`
-- Produces: `build_context_graph(at_time: Optional[datetime] = None) -> ContextGraph`
-- Produces: `snapshot(label: str, description: str) -> Dict[str, Any]`
+**Produces:** `ProjectionEngine(projection_path, provenance_path, versions_path)`, `.project_file()`, `.build_context_graph()`, `.snapshot()`.
 
-- [ ] **Step 1: Write failing end-to-end tests**
+- [ ] **Step 1: Write RED end-to-end tests** proving:
+  1. source A + B => 3 graph nodes, 2 `ABOUT` edges, 1 explicit conflict;
+  2. replay of source A leaves projection digest unchanged;
+  3. process restart preserves digest and snapshot checksum;
+  4. malformed source records one evidence provenance entry but leaves accepted projection digest unchanged.
 
-```python
-from pathlib import Path
-
-import pytest
-from pydantic import ValidationError
-
-from integrations.shadow_projection_v1.projector import ProjectionEngine
-
-FIXTURES = Path(__file__).parent / "fixtures"
-
-
-def _engine(tmp_path: Path) -> ProjectionEngine:
-    return ProjectionEngine(
-        projection_path=tmp_path / "projection.json",
-        provenance_path=tmp_path / "provenance.db",
-        versions_path=tmp_path / "versions.db",
-    )
-
-
-def test_two_sources_preserve_conflict_and_build_context_graph(tmp_path: Path):
-    engine = _engine(tmp_path)
-    engine.project_file(FIXTURES / "source_a.json")
-    engine.project_file(FIXTURES / "source_b_conflict.json")
-    assert len(engine.store.conflicts()) == 1
-    graph = engine.build_context_graph()
-    assert graph.stats()["node_count"] == 3
-    assert graph.stats()["edge_count"] == 2
-
-
-def test_replay_has_identical_projection_digest(tmp_path: Path):
-    engine = _engine(tmp_path)
-    digest_one = engine.project_file(FIXTURES / "source_a.json")
-    digest_two = engine.project_file(FIXTURES / "source_a.json")
-    assert digest_two == digest_one
-
-
-def test_restart_reconstructs_identical_projection_and_snapshot(tmp_path: Path):
-    first = _engine(tmp_path)
-    first.project_file(FIXTURES / "source_a.json")
-    expected = first.store.digest()
-    first.snapshot("accepted-1", "accepted state before restart")
-
-    second = _engine(tmp_path)
-    assert second.store.digest() == expected
-    snapshot = second.versions.get_version("accepted-1")
-    assert snapshot is not None
-    assert second.versions.verify_checksum(snapshot) is True
-    assert snapshot["metadata"]["projection_digest"] == expected
-
-
-def test_malformed_source_records_evidence_but_never_changes_projection(tmp_path: Path):
-    engine = _engine(tmp_path)
-    before = engine.store.digest()
-    with pytest.raises(ValidationError):
-        engine.project_file(FIXTURES / "malformed_source.json")
-    assert engine.store.digest() == before
-    assert engine.provenance.verify()["total_entries"] == 1
-```
-
-- [ ] **Step 2: Run tests and confirm RED**
+- [ ] **Step 2: Run RED**
 
 ```bash
 pytest tests/integrations/shadow_projection_v1/test_projector_restart.py -v
 ```
 
-Expected: import failure for `ProjectionEngine`.
-
-- [ ] **Step 3: Implement exact source-capture and staging order**
-
-`project_file()` order is fixed:
+- [ ] **Step 3: Implement exact ingestion order**
 
 ```python
-raw_bytes = path.read_bytes()
-content_digest = sha256_hex(raw_bytes)
-raw_payload = json.loads(raw_bytes.decode("utf-8"))
-
-# Header capture occurs before semantic SourceEnvelope validation.
-source_id = raw_payload["source_id"]
-source_version = raw_payload["source_version"]
-observed_at = raw_payload["observed_at"]
-source_uri = stable_uri("source", source_id)
-evidence_uri = evidence_uri_from_digest(content_digest)
-
-evidence = EvidenceRecord(
+raw = path.read_bytes()
+digest = sha256_hex(raw)
+payload = json.loads(raw.decode("utf-8"))
+source_uri = stable_uri("source", payload["source_id"])
+evidence_uri = evidence_uri_from_digest(digest)
+self.provenance.record_evidence(EvidenceRecord(
     evidence_uri=evidence_uri,
     source_uri=source_uri,
-    source_id=source_id,
-    source_version=source_version,
-    content_digest=content_digest,
-    observed_at=observed_at,
-)
-self.provenance.record_evidence(evidence)
-
-envelope = SourceEnvelope.model_validate(raw_payload)
+    source_id=payload["source_id"],
+    source_version=payload["source_version"],
+    content_digest=digest,
+    observed_at=payload["observed_at"],
+))
+envelope = SourceEnvelope.model_validate(payload)
 staged = self.store.clone()
 ```
 
-For each `SourceRecord`:
+For each record, `canonical_uri = stable_uri("resource", record.canonical_key)`. Assertion URI is:
 
 ```python
-canonical_uri = stable_uri("resource", record.canonical_key)
-staged.upsert_resource(canonical_uri, record.resource_type)
-```
-
-For each `RawAssertion`, derive identity from a canonical payload that includes evidence so competing sources stay distinct:
-
-```python
-identity_payload = {
+stable_uri("assertion", sha256_hex({
     "canonical_uri": canonical_uri,
     "predicate": raw_assertion.predicate,
     "value": raw_assertion.value,
     "evidence_uri": evidence_uri,
-}
-assertion_uri = stable_uri("assertion", sha256_hex(identity_payload))
+}))
 ```
 
-Create an `AssertionRecord`, add it to `staged`, then validate `staged.graph_dict()`. If SHACL fails, raise `ValueError("SHACL admission failed: %s" % report_text)` and do not call `self.store.commit_from(staged)` or record assertion provenance.
+Add `AssertionRecord`s only to `staged`. Validate `staged.graph_dict()`.
 
-After SHACL passes:
+**Fail-closed commit ordering after SHACL PASS:**
 
 ```python
-self.store.commit_from(staged)
 for assertion in newly_staged_assertions:
     self.provenance.record_assertion(assertion)
+# only after every required provenance call succeeds:
+self.store.commit_from(staged)
 return self.store.digest()
 ```
 
-This gives source-level provenance even when semantic admission fails, while accepted assertion provenance is written only after admission.
+If assertion provenance fails, accepted JSON remains unchanged. If atomic JSON commit fails after provenance succeeds, the extra provenance describes an admission-passed attempted projection but no unsupported claim of accepted state is created.
 
-- [ ] **Step 4: Implement ContextGraph reconstruction using v0.6.5 public methods**
+- [ ] **Step 4: Reconstruct `ContextGraph` through v0.6.5 public calls**
 
 ```python
-from semantica.context import ContextGraph
-
-
 def build_context_graph(self, at_time=None):
     payload = self.store.graph_dict(at_time=at_time)
     graph = ContextGraph()
     for node in payload["nodes"]:
         metadata = dict(node.get("metadata", {}))
-        graph.add_node(
-            node["id"],
-            node["type"],
-            node.get("content") or node["id"],
-            valid_from=node.get("valid_from"),
-            valid_until=node.get("valid_until"),
-            **metadata
-        )
+        graph.add_node(node["id"], node["type"], node.get("content") or node["id"],
+                       valid_from=node.get("valid_from"), valid_until=node.get("valid_until"), **metadata)
     for edge in payload["edges"]:
-        graph.add_edge(
-            edge["source"],
-            edge["target"],
-            edge["type"],
-            weight=edge.get("weight", 1.0),
-            id=edge["id"],
-        )
+        graph.add_edge(edge["source"], edge["target"], edge["type"],
+                       weight=edge.get("weight", 1.0), id=edge["id"])
     return graph
 ```
 
-- [ ] **Step 5: Implement persistent version snapshots**
-
-Initialize:
+- [ ] **Step 5: Persist accepted-state snapshots**
 
 ```python
-from semantica.change_management import TemporalVersionManager
-
 self.versions = TemporalVersionManager(storage_path=str(versions_path))
-```
 
-Snapshot the full accepted historical graph:
 
-```python
 def snapshot(self, label, description):
     return self.versions.create_snapshot(
         graph=self.store.graph_dict(),
@@ -1076,94 +534,44 @@ def snapshot(self, label, description):
     )
 ```
 
-- [ ] **Step 6: Run tests and confirm GREEN**
+- [ ] **Step 6: Run GREEN and commit**
 
 ```bash
 pytest tests/integrations/shadow_projection_v1/test_projector_restart.py -v
-```
-
-Expected: PASS.
-
-- [ ] **Step 7: Commit**
-
-```bash
 git add integrations/shadow_projection_v1/projector.py tests/integrations/shadow_projection_v1/test_projector_restart.py
 git commit -m "feat: add deterministic Semantica projection engine"
 ```
 
 ---
 
-### Task 6: Read-only gateway and negative authority proof
+### Task 6: Read-only gateway and authority boundary
 
-**Files:**
-- Create: `integrations/shadow_projection_v1/gateway.py`
-- Create: `tests/integrations/shadow_projection_v1/test_gateway_authority.py`
-- Modify: `integrations/shadow_projection_v1/__init__.py`
+**Files:** create `gateway.py`, `test_gateway_authority.py`; modify package `__init__.py`.
 
-**Interfaces:**
-- Produces: `ReadGateway(engine: ProjectionEngine)`
-- Produces: `entity_get(canonical_uri: str) -> Dict[str, Any]`
-- Produces: `assertion_query(canonical_uri: Optional[str] = None, predicate: Optional[str] = None) -> List[Dict[str, Any]]`
-- Produces: `relationship_query(canonical_uri: str) -> List[Dict[str, Any]]`
-- Produces: `provenance_trace(entity_uri: str) -> Dict[str, Any]`
-- Produces: `explain(canonical_uri: str) -> Dict[str, Any]`
-- Produces: `graph_summary() -> Dict[str, Any]`
+**Public methods:** `entity_get`, `assertion_query`, `relationship_query`, `provenance_trace`, `explain`, `graph_summary`.
 
-- [ ] **Step 1: Write failing authority tests**
+- [ ] **Step 1: Write RED tests**
 
 ```python
-from pathlib import Path
-
-import pytest
-
-import integrations.shadow_projection_v1 as public_package
-from integrations.shadow_projection_v1.gateway import ReadGateway
-from integrations.shadow_projection_v1.projector import ProjectionEngine
-
-FIXTURES = Path(__file__).parent / "fixtures"
-
-
-def _gateway(tmp_path: Path) -> ReadGateway:
-    engine = ProjectionEngine(
-        projection_path=tmp_path / "projection.json",
-        provenance_path=tmp_path / "provenance.db",
-        versions_path=tmp_path / "versions.db",
-    )
-    engine.project_file(FIXTURES / "source_a.json")
-    return ReadGateway(engine)
-
-
-def test_package_root_exports_only_read_gateway():
+def test_root_exports_only_gateway():
     assert public_package.__all__ == ["ReadGateway"]
 
 
-def test_gateway_exposes_no_mutation_methods(tmp_path: Path):
-    gateway = _gateway(tmp_path)
+def test_gateway_has_no_mutators(gateway):
     for name in ("promote", "retract", "purge", "resolve_conflict", "add_assertion"):
         with pytest.raises(AttributeError):
             getattr(gateway, name)
-
-
-def test_explain_returns_assertions_and_evidence(tmp_path: Path):
-    gateway = _gateway(tmp_path)
-    result = gateway.explain(
-        "https://id.example.invalid/resource/workstream%3Aws-1"
-    )
-    assert result["canonical_uri"].endswith("workstream%3Aws-1")
-    assert len(result["assertions"]) == 1
-    assert result["assertions"][0]["evidence_uri"]
-    assert result["provenance"]
 ```
 
-- [ ] **Step 2: Run tests and confirm RED**
+Also project source A and require `explain(resource_uri)` to return one assertion, its evidence URI, and non-empty assertion provenance.
+
+- [ ] **Step 2: Run RED**
 
 ```bash
 pytest tests/integrations/shadow_projection_v1/test_gateway_authority.py -v
 ```
 
-Expected: import failure for gateway module.
-
-- [ ] **Step 3: Implement `ReadGateway` with a private engine reference**
+- [ ] **Step 3: Implement gateway with private engine**
 
 ```python
 class ReadGateway:
@@ -1171,240 +579,133 @@ class ReadGateway:
         self._engine = engine
 ```
 
-The class defines only the six public methods listed in Interfaces. No public property returns `ProjectionEngine`, `ProjectionStore`, `PersistentProvenance`, or `TemporalVersionManager`.
-
-`explain()` returns this exact shape:
+No public method/property returns `ProjectionEngine`, `ProjectionStore`, `PersistentProvenance`, or `TemporalVersionManager`. `explain()` returns:
 
 ```python
 {
-    "canonical_uri": canonical_uri,
-    "resource": resource_dict,
-    "assertions": assertion_dicts,
-    "conflicts": matching_conflicts,
-    "provenance": {
-        assertion_uri: self._engine.provenance.lineage(assertion_uri)
-        for assertion_uri in assertion_uris
-    },
+  "canonical_uri": canonical_uri,
+  "resource": resource_dict,
+  "assertions": assertion_dicts,
+  "conflicts": matching_conflicts,
+  "provenance": {uri: self._engine.provenance.lineage(uri) for uri in assertion_uris},
 }
 ```
 
-- [ ] **Step 4: Make the package root read-only by construction**
+- [ ] **Step 4: Root export is read-only**
 
 ```python
-# integrations/shadow_projection_v1/__init__.py
 from .gateway import ReadGateway
-
 __all__ = ["ReadGateway"]
 ```
 
-`ProjectionEngine` remains importable only from `integrations.shadow_projection_v1.projector` for internal/test execution.
+Internal tests import `ProjectionEngine` from `.projector`, never package root.
 
-- [ ] **Step 5: Run tests and confirm GREEN**
+- [ ] **Step 5: Run GREEN and commit**
 
 ```bash
 pytest tests/integrations/shadow_projection_v1/test_gateway_authority.py -v
-```
-
-Expected: PASS.
-
-- [ ] **Step 6: Commit**
-
-```bash
 git add integrations/shadow_projection_v1/gateway.py integrations/shadow_projection_v1/__init__.py tests/integrations/shadow_projection_v1/test_gateway_authority.py
 git commit -m "feat: expose read-only shadow projection gateway"
 ```
 
 ---
 
-### Task 7: G1-G12 acceptance runner and machine-readable receipt
+### Task 7: G1-G12 verifier and receipt
 
-**Files:**
-- Create: `integrations/shadow_projection_v1/verification.py`
-- Create: `tests/integrations/shadow_projection_v1/test_acceptance.py`
-- Create at verification time: `docs/superpowers/receipts/semantica-shadow-projection-v1.json`
+**Files:** create `verification.py`, `test_acceptance.py`; generate `docs/superpowers/receipts/semantica-shadow-projection-v1.json`.
 
-**Interfaces:**
-- Produces: `run_acceptance(work_dir: Path, corpus_paths: List[Path]) -> ProjectionReceipt`
-- Produces: `write_receipt(receipt: ProjectionReceipt, path: Path) -> None`
-
-- [ ] **Step 1: Write failing acceptance test**
+- [ ] **Step 1: Write RED acceptance test**
 
 ```python
-from pathlib import Path
-
-from integrations.shadow_projection_v1.verification import run_acceptance
-
-FIXTURES = Path(__file__).parent / "fixtures"
-
-
-def test_all_v1_acceptance_gates_pass(tmp_path: Path):
-    receipt = run_acceptance(
-        work_dir=tmp_path,
-        corpus_paths=[
-            FIXTURES / "source_a.json",
-            FIXTURES / "source_b_conflict.json",
-        ],
-    )
-    assert receipt.semantica_version_or_sha == (
-        "v0.6.5@5b319560fb0b8403644b70bc592864418cdcc740"
-    )
-    assert receipt.projection_contract_version == "shadow-projection/v1"
+def test_all_gates_pass(tmp_path):
+    receipt = run_acceptance(tmp_path, [SOURCE_A, SOURCE_B])
+    assert receipt.semantica_version_or_sha == "v0.6.5@5b319560fb0b8403644b70bc592864418cdcc740"
     assert receipt.replay_run_1_digest == receipt.replay_run_2_digest
-    assert receipt.provenance_integrity_status == "PASS"
-    assert receipt.validation_status == "PASS"
     assert set(receipt.acceptance_gates) == {"G%d" % n for n in range(1, 13)}
-    assert all(value == "PASS" for value in receipt.acceptance_gates.values())
+    assert all(v == "PASS" for v in receipt.acceptance_gates.values())
 ```
 
-- [ ] **Step 2: Run acceptance test and confirm RED**
+- [ ] **Step 2: Run RED**
 
 ```bash
 pytest tests/integrations/shadow_projection_v1/test_acceptance.py -v
 ```
 
-Expected: import failure for verification module.
-
-- [ ] **Step 3: Implement explicit gate helpers**
-
-`verification.py` defines one helper per gate, each raising `AssertionError` on failure:
-
-```python
-def _g1_identity():
-    assert stable_uri("resource", "workstream:ws-1") == stable_uri(
-        "resource", "workstream:ws-1"
-    )
-
-
-def _g10_authority(gateway):
-    for name in ("promote", "retract", "purge", "resolve_conflict", "add_assertion"):
-        assert not hasattr(gateway, name)
-```
-
-The remaining helpers must perform these exact observable checks:
+- [ ] **Step 3: Implement one fail-closed helper per gate**
 
 ```text
-G2  project the same corpus into two fresh directories; digests and node/assertion counts match
-G3  every accepted AssertionRecord has provenance lineage containing its evidence URI
-G4  reconstruct PersistentProvenance from the SQLite path; verify_chain()["valid"] is True
-G5  retract one assertion at 20:10Z; 20:05Z active view contains it and 20:11Z active view omits it
-G6  source A + source B yield two assertions for status and exactly one conflict
-G7  malformed source raises Pydantic ValidationError; accepted projection digest is unchanged
-G8  reconstruct ProjectionEngine from existing files; accepted projection digest is identical
-G9  write resource/assertion, reconstruct ProjectionStore from disk, and compare exact model dumps
-G11 package __all__ is ["ReadGateway"], forbidden gateway methods are absent, and no server process is started by the verifier
-G12 create TemporalVersionManager snapshot, verify checksum, then reconstruct from source corpus and match snapshot metadata projection_digest
+G1  same stable key => exact same HTTPS URI
+G2  same corpus in two fresh directories => identical digest and counts
+G3  every accepted assertion lineage includes its evidence URI
+G4  new PersistentProvenance instance => verify_chain().valid true
+G5  explicit 20:05Z historical view contains retracted assertion; 20:11Z view omits it
+G6  A+B => two status assertions and exactly one conflict
+G7  malformed source raises ValidationError and accepted digest is unchanged
+G8  new ProjectionEngine over same files => identical digest
+G9  write then reopen ProjectionStore => exact resource/assertion model dumps
+G10 gateway has none of promote/retract/purge/resolve_conflict/add_assertion
+G11 package root exports only ReadGateway; verifier starts no Explorer/MCP/server process
+G12 snapshot checksum verifies; clean source reconstruction matches snapshot metadata projection_digest
 ```
 
-No helper may use `pytest.skip`, xfail, conditional pass, or `try/except: pass`.
+No skips, xfails, conditional PASS, or swallowed exceptions.
 
-- [ ] **Step 4: Implement `run_acceptance()` with fail-closed gate recording**
+- [ ] **Step 4: Implement gate runner**
 
 ```python
-def run_acceptance(work_dir, corpus_paths):
-    gates = {}
-
-    def run_gate(code, fn):
-        fn()
-        gates[code] = "PASS"
-
-    run_gate("G1", _g1_identity)
-    run_gate("G2", lambda: _g2_replay(work_dir, corpus_paths))
-    run_gate("G3", lambda: _g3_provenance(work_dir, corpus_paths))
-    run_gate("G4", lambda: _g4_integrity(work_dir, corpus_paths))
-    run_gate("G5", lambda: _g5_temporal(work_dir))
-    run_gate("G6", lambda: _g6_conflict(work_dir, corpus_paths))
-    run_gate("G7", lambda: _g7_validation(work_dir))
-    run_gate("G8", lambda: _g8_restart(work_dir, corpus_paths))
-    run_gate("G9", lambda: _g9_store_contract(work_dir))
-    run_gate("G10", lambda: _g10_authority(_build_gateway(work_dir)))
-    run_gate("G11", lambda: _g11_security_surface(_build_gateway(work_dir)))
-    run_gate("G12", lambda: _g12_recovery(work_dir, corpus_paths))
+def run_gate(gates, code, fn):
+    fn()
+    gates[code] = "PASS"
 ```
 
-If any helper raises, `run_acceptance()` propagates the failure; it does not emit a successful receipt. A separate CLI/reporting layer is not part of V1.
+Call G1 through G12 in order. Propagate failures; do not write a successful receipt when any gate raises. G2 uses `replay-1/` and `replay-2/`, never the same mutable store.
 
-For G2 use `work_dir / "replay-1"` and `work_dir / "replay-2"`. Never compare two executions against the same mutable store.
+- [ ] **Step 5: Compute receipt fields deterministically**
 
-- [ ] **Step 5: Implement deterministic receipt fields**
+`source_corpus_digest = sha256_hex(sorted([{"name": p.name, "sha256": sha256_hex(p.read_bytes())} ...], key=lambda x: x["name"]))`.
 
-`source_corpus_digest` is SHA-256 over a sorted list of:
-
-```python
-{
-    "name": path.name,
-    "sha256": sha256_hex(path.read_bytes()),
-}
-```
-
-`canonical_projection_digest` is the accepted `ProjectionStore.digest()` after source A + source B.
-
-`backend_identifier` is exactly:
+Backend identifier exactly:
 
 ```text
 json-projection+sqlite-provenance+sqlite-versions
 ```
 
-`created_at` is current UTC and is receipt metadata only; it is not part of G2 replay comparison.
+`created_at` is UTC receipt metadata and excluded from replay equality.
 
-- [ ] **Step 6: Implement receipt writing**
+- [ ] **Step 6: Write receipt**
 
 ```python
-import json
-
-
 def write_receipt(receipt, path):
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = receipt.model_dump(mode="json")
-    path.write_text(
-        json.dumps(payload, sort_keys=True, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    path.write_text(json.dumps(receipt.model_dump(mode="json"), sort_keys=True, indent=2) + "\n", encoding="utf-8")
 ```
 
-- [ ] **Step 7: Run complete V1 tests**
+- [ ] **Step 7: Run full V1 and focused upstream tests**
 
 ```bash
 pytest tests/integrations/shadow_projection_v1 -v
-```
-
-Expected: all tests PASS; zero skips and zero xfails in this directory.
-
-- [ ] **Step 8: Run focused upstream regressions**
-
-```bash
 pytest tests/provenance/test_manager.py tests/context/test_context.py tests/test_graph_store_methods.py -q
 ```
 
-Expected: PASS. If a failure appears, reproduce it on a clean v0.6.5 checkout before classifying it as pre-existing.
+Required: V1 suite has zero skips/xfails. Any upstream failure must be reproduced on clean v0.6.5 before being labeled pre-existing.
 
-- [ ] **Step 9: Generate and validate the committed receipt**
+- [ ] **Step 8: Generate receipt and verify formatting**
 
 ```bash
 python - <<'PY'
 from pathlib import Path
 from tempfile import TemporaryDirectory
-
 from integrations.shadow_projection_v1.verification import run_acceptance, write_receipt
-
 fixtures = Path("tests/integrations/shadow_projection_v1/fixtures")
 with TemporaryDirectory() as tmp:
-    receipt = run_acceptance(
-        Path(tmp),
-        [fixtures / "source_a.json", fixtures / "source_b_conflict.json"],
-    )
-    write_receipt(
-        receipt,
-        Path("docs/superpowers/receipts/semantica-shadow-projection-v1.json"),
-    )
+    receipt = run_acceptance(Path(tmp), [fixtures / "source_a.json", fixtures / "source_b_conflict.json"])
+    write_receipt(receipt, Path("docs/superpowers/receipts/semantica-shadow-projection-v1.json"))
 PY
-
 python -m json.tool docs/superpowers/receipts/semantica-shadow-projection-v1.json >/dev/null
 git diff --check
 ```
 
-Expected: JSON parses, `git diff --check` exits 0, and the receipt shows G1-G12 all PASS.
-
-- [ ] **Step 10: Commit the acceptance proof**
+- [ ] **Step 9: Commit proof**
 
 ```bash
 git add integrations/shadow_projection_v1/verification.py tests/integrations/shadow_projection_v1/test_acceptance.py docs/superpowers/receipts/semantica-shadow-projection-v1.json
@@ -1415,28 +716,28 @@ git commit -m "test: prove Semantica shadow projection acceptance"
 
 ## Final Verification Before PR
 
-Run from the implementation branch rooted at `5b319560fb0b8403644b70bc592864418cdcc740`:
+The implementation branch must prove its fork point, not merely contain v0.6.5 somewhere in history:
 
 ```bash
-git merge-base --is-ancestor 5b319560fb0b8403644b70bc592864418cdcc740 HEAD
+git fetch https://github.com/semantica-agi/semantica.git main:refs/remotes/semantica-upstream/main
+test "$(git merge-base HEAD refs/remotes/semantica-upstream/main)" = "5b319560fb0b8403644b70bc592864418cdcc740"
 git status --short
 pytest tests/integrations/shadow_projection_v1 -v
 pytest tests/provenance/test_manager.py tests/context/test_context.py tests/test_graph_store_methods.py -q
 python -m json.tool docs/superpowers/receipts/semantica-shadow-projection-v1.json >/dev/null
 git diff --check
-git log --oneline --decorate -8
 ```
 
 Required state:
 
 ```text
-v0.6.5 ancestor check: PASS
+fork point with current upstream main: exactly v0.6.5 commit 5b319560...
 working tree: clean
-V1 acceptance tests: PASS, zero skips/xfails
-focused upstream regressions: PASS or separately proven pre-existing
-receipt G1-G12: PASS
+V1 tests: PASS, zero skips/xfails
+focused upstream regressions: PASS or independently proven pre-existing
+receipt: G1-G12 PASS
 fork main: unchanged
 external deployments/resources: none
 ```
 
-Open a draft PR only after the final verification evidence exists. Do not silently retarget the implementation onto the stale fork `main`; synchronization or retargeting is a separate compatibility decision and requires rerunning the complete acceptance suite.
+Open a draft PR only after this evidence exists. Do not retarget or merge onto stale fork `main` without a separate synchronization decision and complete compatibility rerun.
