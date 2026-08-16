@@ -1,0 +1,17 @@
+{
+  "source_id": "provider-observation-b",
+  "source_version": "snapshot-b1",
+  "observed_at": "2026-08-15T20:05:00Z",
+  "records": [{
+    "canonical_key": "workstream:ws-1",
+    "resource_type": "Workstream",
+    "assertions": [{
+      "predicate": "status",
+      "value": "BLOCKED",
+      "confidence": 0.95,
+      "authority_class": "provider_observation",
+      "valid_from": "2026-08-15T20:05:00Z",
+      "valid_until": null
+    }]
+  }]
+}
