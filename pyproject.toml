@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "semantica"
-version = "0.6.0"
+version = "0.6.5"
 description = "Accountability and context layer for AI agents. Context graphs, decision intelligence, full provenance tracking, and explainable reasoning engines — every AI decision traceable, every output auditable."
 readme = "README.md"
 license = { text = "MIT" }
@@ -66,7 +66,6 @@ dependencies = [
   "grpcio>=1.81.1",
   "beautifulsoup4>=4.15.0",
   "lxml>=6.1.1",
-  "pypdf2>=2.10.0",
   "python-docx>=1.2.0",
   "openpyxl>=3.1.5",
   "pillow>=12.2.0",
@@ -146,6 +145,9 @@ graph-apache-age = ["psycopg2-binary>=2.9.0"]
 graph-all = [
   "semantica[graph-neo4j,graph-falkordb,graph-amazon-neptune,graph-apache-age]"
 ]
+
+# ---- Triplet Store Backends ----
+tripletstore-oxigraph = ["pyoxigraph>=0.5.0"]
 
 # ---- Vector Store Backends ----
 vectorstore-qdrant = ["qdrant-client>=1.0.0"]
@@ -231,7 +233,8 @@ explorer = [
   "fastapi>=0.100.0",
   "uvicorn[standard]>=0.22.0",
   "websockets>=15.0.1",
-  "python-multipart>=0.0.6"
+  "python-multipart>=0.0.6",
+  "defusedxml>=0.7.1"
 ]
 explorer-lite = [
   "streamlit>=1.25.0",
@@ -240,8 +243,8 @@ explorer-lite = [
 
 # Everything (cross-platform — gpu excluded; install semantica[gpu] separately on Linux)
 all = [
-  "semantica[dev,viz,infra,cloud,monitoring,watch,llm-all,models-huggingface,split-all,graph-all,vectorstore-all,parse-docling,ingest-parquet,ingest-arrow,shacl,explorer]",
-  "semantica[dev,viz,infra,cloud,monitoring,watch,llm-all,models-huggingface,split-all,graph-all,vectorstore-all,parse-docling,ingest-parquet,ingest-arrow,shacl,agno]"
+  "semantica[dev,viz,infra,cloud,monitoring,watch,llm-all,models-huggingface,split-all,graph-all,tripletstore-oxigraph,vectorstore-all,parse-docling,ingest-parquet,ingest-arrow,shacl,explorer]",
+  "semantica[dev,viz,infra,cloud,monitoring,watch,llm-all,models-huggingface,split-all,graph-all,tripletstore-oxigraph,vectorstore-all,parse-docling,ingest-parquet,ingest-arrow,shacl,agno]"
 ]
 
 # ---------------- ENTRYPOINTS ----------------

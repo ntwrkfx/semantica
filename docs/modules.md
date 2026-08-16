@@ -251,7 +251,7 @@ store.add_triplets(subject, predicate, obj)
 results = store.sparql("SELECT ?s ?p ?o WHERE { ?s ?p ?o }")
 ```
 
-**Backends:** Blazegraph, Apache Jena, RDF4J
+**Backends:** Oxigraph (embedded), Blazegraph, Apache Jena, RDF4J
 
 
 ## Quality Assurance

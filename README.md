@@ -2,6 +2,8 @@
 
 <img src="Semantica Logo.png" alt="Semantica" width="420"/>
 
+<a href="https://trendshift.io/repositories/18986?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-18986" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/18986" alt="semantica-agi%2Fsemantica | Trendshift" width="250" height="55"/></a>
+
 ### Graph-Native Infrastructure for Context and Accountable AI Systems
 
 #### *The Open Source Palantir for AI Agents*
@@ -19,6 +21,10 @@
 [![GitHub Stars](https://img.shields.io/github/stars/semantica-agi/semantica?style=flat-square&color=FFD700&logo=github&logoColor=white&label=Stars)](https://github.com/semantica-agi/semantica) [![GitHub Forks](https://img.shields.io/github/forks/semantica-agi/semantica?style=flat-square&color=6E40C9&logo=github&logoColor=white&label=Forks)](https://github.com/semantica-agi/semantica/network/members) [![Contributors](https://img.shields.io/github/contributors/semantica-agi/semantica?style=flat-square&color=2EA043&logo=github&logoColor=white)](https://github.com/semantica-agi/semantica/graphs/contributors) [![PyPI](https://img.shields.io/pypi/v/semantica.svg?style=flat-square&color=0066CC&logo=pypi&logoColor=white)](https://pypi.org/project/semantica/) [![Total Downloads](https://static.pepy.tech/badge/semantica?style=flat-square)](https://pepy.tech/project/semantica) [![Python 3.8+](https://img.shields.io/badge/python-3.8+-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](https://opensource.org/licenses/MIT) [![CI](https://img.shields.io/github/actions/workflow/status/semantica-agi/semantica/ci.yml?style=flat-square&label=CI)](https://github.com/semantica-agi/semantica/actions) [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/semantica-agi/semantica)
 
 [![Website](https://img.shields.io/badge/Website-getsemantica.ai-000000?style=flat-square&logo=googlechrome&logoColor=white)](https://getsemantica.ai/) [![Docs](https://img.shields.io/badge/Docs-docs.getsemantica.ai-0099FF?style=flat-square&logo=readthedocs&logoColor=white)](https://docs.getsemantica.ai/) [![Discord](https://img.shields.io/badge/Discord-Join%20Community-5865F2?style=flat-square&logo=discord&logoColor=white)](https://discord.gg/sV34vps5hH) [![Twitter/X](https://img.shields.io/badge/Follow-%40BuildSemantica-000000?style=flat-square&logo=x&logoColor=white)](https://x.com/BuildSemantica) [![YouTube](https://img.shields.io/badge/YouTube-Watch%20Demos-FF0000?style=flat-square&logo=youtube&logoColor=white)](https://www.youtube.com/watch?v=QfnNZg4-dZA) [![Changelog](https://img.shields.io/badge/Changelog-View-6E40C9?style=flat-square&logo=keepachangelog&logoColor=white)](CHANGELOG.md)
+
+```bash
+pip install semantica
+```
 
 </div>
 
@@ -69,7 +75,7 @@ Semantica sits underneath your LLM, vector store, and agent framework as a deter
 - **Knowledge Pipeline:** Multi-source ingestion, entity-aware chunking, NER/relation/event extraction, and knowledge graph construction, with semantic deduplication and provenance-preserving merges throughout
 - **Enterprise Data Platforms:** Native connectors for Databricks (Unity Catalog + Delta Lake, PAT/OAuth M2M auth, catalog/schema/table/lineage introspection) and Snowflake (warehouse/database/schema, key-pair and OAuth auth), so tables already living in your lakehouse or warehouse become graph nodes with provenance, not another export/import hop
 - **Graph Analytics:** Centrality, community detection, link prediction, and shortest-path queries over the graph you just built
-- **Polyglot Graph Storage:** Native RDF (Blazegraph, Apache Jena, Eclipse RDF4J via SPARQL) and Labeled Property Graphs (Neo4j, FalkorDB, Apache AGE, AWS Neptune via Cypher), plus vector stores, all swappable without touching your code
+- **Polyglot Graph Storage:** Native RDF (embedded Oxigraph, Blazegraph, Apache Jena, Eclipse RDF4J via SPARQL) and Labeled Property Graphs (Neo4j, FalkorDB, Apache AGE, AWS Neptune via Cypher), plus vector stores, all swappable without touching your code
 - **Visualization:** Explore any graph, ontology, or timeline in an interactive browser workbench
 - **Drop-in Integrations:** Native Agno support, a full-featured MCP server, a comprehensive CLI, a REST API, and plugins across major editors
 
@@ -126,7 +132,7 @@ compliant = graph.check_decision_rules({"category": "vendor_selection"})  # poli
 ```bash
 semantica doctor
 # Python 3.11.9         pass
-# semantica 0.6.0       pass
+# semantica 0.6.5       pass
 # faiss vector store    pass
 # Config file           pass    ~/.semantica/config.yaml
 ```
@@ -156,7 +162,7 @@ Sources → Ingest → Parse → Normalize → Split → Extract → Conflict De
 - **Extract → Conflict Detection → Deduplication:** NER, relations, events, triplets; conflicting facts flagged and resolved before they merge
 - **Knowledge Graph:** `GraphBuilder` constructs the graph; bi-temporal facts and full graph analytics (centrality, communities, link prediction) run on top of it
 - **Ontology · Reasoning · Provenance · Decisions:** the intelligence layer sitting on the KG, with SHACL/OWL governance, Rete/Datalog/SPARQL inference, W3C PROV-O lineage, and first-class decision records
-- **Storage:** polyglot by design, with RDF triple stores (Blazegraph, Apache Jena, Eclipse RDF4J), Labeled Property Graphs (Neo4j, FalkorDB, Apache AGE, AWS Neptune), and vector stores, all swappable without touching your code
+- **Storage:** polyglot by design, with RDF triple stores (embedded Oxigraph, Blazegraph, Apache Jena, Eclipse RDF4J), Labeled Property Graphs (Neo4j, FalkorDB, Apache AGE, AWS Neptune), and vector stores, all swappable without touching your code
 - **Outputs:** export (RDF, OWL, Parquet, Cypher, JSON-LD), interactive visualization, and access via REST API, MCP server, or CLI
 
 **→ [Full Mermaid diagrams for the pipeline and the decision intelligence lifecycle](ARCHITECTURE.md)**
@@ -1141,7 +1147,7 @@ if report.valid:
 | **Ontology Hub** | SHACL Studio · visual editor · cross-ontology alignments · health dashboard |
 | **Vector Store** | FAISS · Pinecone · Weaviate · Qdrant · Milvus · PgVector · hybrid + filtered search |
 | **Graph Databases (LPG)** | Neo4j · FalkorDB · Apache AGE · AWS Neptune |
-| **Triple Stores (RDF)** | Blazegraph · Apache Jena · Eclipse RDF4J · unified `TripletStore` interface · SPARQL query & bulk load |
+| **Triple Stores (RDF)** | Oxigraph (embedded) · Blazegraph · Apache Jena · Eclipse RDF4J · unified `TripletStore` interface · SPARQL query & bulk load |
 | **Enterprise Data Platforms** | Databricks (`DatabricksIngestor`: Unity Catalog + Delta Lake, PAT/OAuth M2M, table/query ingestion, catalog/schema/table/lineage introspection) · Snowflake (`SnowflakeIngestor`: warehouse/database/schema, password/key-pair/OAuth auth) |
 | **LLM Providers** | **All already supported today:** OpenAI (GPT-4o, o1, o3) · Anthropic (Claude) · Google Gemini · Mistral · Meta Llama · Groq · Cohere · Azure OpenAI · AWS Bedrock · Ollama · DeepSeek · Perplexity · Together AI · Fireworks AI · Replicate · HuggingFace · via `semantica.llms` and LiteLLM |
 
@@ -1468,12 +1474,18 @@ For contributor / dev-server setup: **[explorer/README.md: Local Setup Guide](ex
 
 ---
 
-## What's New in v0.6.0
+## What's New in v0.6.5
 
-- **Named-Graph Support for `JenaStore`:** Migrated onto `rdflib.Dataset(default_union=False)`, completing cross-backend named-graph parity across Blazegraph, RDF4J, and Jena; `add_triplets()` gains a `graph=` option
-- **SPARQL CONSTRUCT Query Templates:** Parameterized, injection-safe `CONSTRUCT` templates extended from Blazegraph-only to RDF4J and Jena, plus pipeline integration via the `construct_template` step type
-- **Databricks Connector:** `DatabricksIngestor` for Unity Catalog + Delta Lake ingestion, with PAT/OAuth M2M auth, table/query ingestion, and catalog/schema/table/lineage introspection. Install with `pip install "semantica[db-databricks]"`
-- **SQLite Vector Store Backend:** `SQLiteVecStore`, a disk-backed local vector store on `sqlite-vec`'s `vec0` virtual tables, with Cosine/L2 metrics, metadata filtering, and WAL mode. Install with `pip install semantica[vectorstore-sqlite]`
+**Security release — upgrading is strongly recommended.** Fixes for 5 externally-reported vulnerabilities in the Explorer API and graph/triplet store backends, plus a CodeQL-flagged ReDoS:
+
+- **Missing authentication on all Explorer API routes** (GHSA-j4mq-hprp-987v, Critical): every route now requires `SEMANTICA_API_KEY`, fails closed (503) rather than open when unconfigured
+- **SSRF via redirect bypass in ontology URL fetching** (GHSA-8c7v-62gr-hj6g, High): redirect targets are now re-validated at every hop and the connection is pinned to the validated address, closing a DNS check-then-use race
+- **Cypher injection via unvalidated node labels and property keys** (GHSA-482h-hw99-h62p, Critical): Neptune, Neo4j, and FalkorDB now sanitize every label/relationship-type/property-key interpolation site
+- **SPARQL injection via unvalidated triplet IRIs** (GHSA-8vgg-8mr4-r236, Critical): Blazegraph, RDF4J, and Jena now validate subject/predicate/object IRIs before interpolation
+- **Missing Origin validation on the WebSocket handshake** (GHSA-4643-wpgq-w329, Moderate, anonymous-mode only): `/ws/graph-updates` now checks `Origin` against the same allowlist `CORSMiddleware` enforces for HTTP
+- **Polynomial ReDoS in SPARQL query validation** (CodeQL `py/polynomial-redos`): fixed a backtracking regex in the Explorer's SPARQL route
+
+Also includes: embedded Oxigraph backend for `TripletStore`, PROV-O trust/spec completeness for `ProvenanceManager`, and the Altair Anzo triplet store backend.
 
 → [Full release notes](RELEASE_NOTES.md) · [Changelog](CHANGELOG.md)
 
@@ -1507,6 +1519,7 @@ pip install semantica[graph-neo4j]          # Neo4j graph store (LPG)
 pip install semantica[graph-falkordb]       # FalkorDB graph store (LPG)
 pip install semantica[graph-apache-age]     # Apache AGE graph store (LPG)
 pip install semantica[graph-amazon-neptune] # AWS Neptune graph store (LPG)
+pip install semantica[tripletstore-oxigraph] # Embedded in-memory/on-disk RDF store
 # RDF triple stores (Blazegraph, Apache Jena, Eclipse RDF4J) need no extra:
 # semantica.triplet_store talks SPARQL over HTTP using the core `requests` dependency
 pip install semantica[vectorstore-qdrant]   # Qdrant vector store

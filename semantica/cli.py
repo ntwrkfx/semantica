@@ -2559,27 +2559,31 @@ def provenance_audit(cli_ctx: CLIContext, since: Optional[str], fmt: str,
 @provenance.command("export")
 @click.option("--format", "fmt", type=click.Choice(["turtle", "ntriples", "jsonld"]),
               default="turtle", show_default=True)
+@click.option("--base-uri", "base_uri", default=None,
+              help="Namespace URI entities/agents/activities are minted under "
+                   "(default: ProvenanceManager.DEFAULT_BASE_URI).")
 @click.option("--output", default=None, type=click.Path())
 @click.option("--dry-run", "local_dry", is_flag=True, default=False)
 @click.pass_obj
-def provenance_export(cli_ctx: CLIContext, fmt: str, output: Optional[str],
-                      local_dry: bool) -> None:
+def provenance_export(cli_ctx: CLIContext, fmt: str, base_uri: Optional[str],
+                      output: Optional[str], local_dry: bool) -> None:
     """Export provenance as W3C PROV-O RDF.
 
     \b
     Example:
       semantica provenance export --format turtle --output prov.ttl
+      semantica provenance export --base-uri https://example.org/kg# --output prov.ttl
     """
     cli_ctx = _require_ctx(cli_ctx)
 
     def _action() -> None:
         if _is_dry(cli_ctx, local_dry):
-            _dry(cli_ctx, "export provenance", format=fmt, output=output)
+            _dry(cli_ctx, "export provenance", format=fmt, base_uri=base_uri, output=output)
             return
         try:
             from .provenance import ProvenanceManager
             pm = ProvenanceManager(config=cli_ctx.config.to_dict())
-            data = pm.export_prov(format=fmt)
+            data = pm.export_prov(format=fmt, base_uri=base_uri)
         except ImportError as exc:
             raise click.ClickException(f"Provenance module not available: {exc}") from exc
         if output:
@@ -2617,6 +2621,115 @@ def provenance_check(cli_ctx: CLIContext, strict: bool, local_json: bool) -> Non
             raise click.ClickException(
                 f"Provenance integrity check failed: {result.get('errors')} error(s)"
             )
+
+    _run_with_error_handling(_action)
+
+
+@provenance.command("invalidate")
+@click.argument("entity_id")
+@click.option("--by", "agent_id", required=True, help="Agent responsible for the invalidation.")
+@click.option("--reason", default=None, help="Human-readable reason for the invalidation.")
+@click.option("--json", "local_json", is_flag=True, default=False)
+@click.option("--dry-run", "local_dry", is_flag=True, default=False)
+@click.pass_obj
+def provenance_invalidate(cli_ctx: CLIContext, entity_id: str, agent_id: str,
+                          reason: Optional[str], local_json: bool,
+                          local_dry: bool) -> None:
+    """Mark a tracked entity as invalidated (tombstone, not a hard delete).
+
+    \b
+    Example:
+      semantica provenance invalidate entity_alice --by reviewer_jane --reason "Source retracted"
+    """
+    cli_ctx = _require_ctx(cli_ctx)
+
+    def _action() -> None:
+        if _is_dry(cli_ctx, local_dry):
+            _dry(cli_ctx, "invalidate provenance entity", entity_id=entity_id, by=agent_id, reason=reason)
+            return
+        try:
+            from .provenance import ProvenanceManager
+            pm = ProvenanceManager(config=cli_ctx.config.to_dict())
+            result = pm.invalidate(entity_id, agent_id=agent_id, reason=reason)
+        except ImportError as exc:
+            raise click.ClickException(f"Provenance module not available: {exc}") from exc
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        if _is_json(cli_ctx, local_json):
+            _jecho(result.to_dict())
+        else:
+            _ok(cli_ctx, f"Invalidated {entity_id} (by {agent_id})")
+
+    _run_with_error_handling(_action)
+
+
+@provenance.command("verify-chain")
+@click.option("--json", "local_json", is_flag=True, default=False)
+@click.pass_obj
+def provenance_verify_chain(cli_ctx: CLIContext, local_json: bool) -> None:
+    """Verify the hash chain across all provenance entries.
+
+    Detects wholesale row deletion: per-row checksums alone only prove a
+    surviving row wasn't edited in place, not that no row is missing.
+
+    \b
+    Example:
+      semantica provenance verify-chain
+    """
+    cli_ctx = _require_ctx(cli_ctx)
+
+    def _action() -> None:
+        try:
+            from .provenance import ProvenanceManager
+            pm = ProvenanceManager(config=cli_ctx.config.to_dict())
+            result = pm.verify_chain()
+        except ImportError as exc:
+            raise click.ClickException(f"Provenance module not available: {exc}") from exc
+        if _is_json(cli_ctx, local_json):
+            _jecho(result)
+        elif result.get("valid"):
+            _ok(cli_ctx, f"Chain verified: {result.get('total_entries')} entries, no breaks")
+        else:
+            _warn(cli_ctx, f"Chain verification failed: {len(result.get('broken_links', []))} broken link(s)")
+            for link in result.get("broken_links", []):
+                click.echo(f"  {link}")
+
+    _run_with_error_handling(_action)
+
+
+@provenance.command("descendants")
+@click.argument("entity_id")
+@click.option("--depth", default=None, type=int, show_default=True)
+@click.option("--json", "local_json", is_flag=True, default=False)
+@click.pass_obj
+def provenance_descendants(cli_ctx: CLIContext, entity_id: str, depth: Optional[int],
+                           local_json: bool) -> None:
+    """Show downstream descendants (reverse lineage) for an entity.
+
+    The counterpart to `provenance lineage`, which only traces upstream
+    ancestors. Answers "entity X was wrong — what downstream facts used it?"
+
+    \b
+    Example:
+      semantica provenance descendants entity_alice --depth 3
+    """
+    cli_ctx = _require_ctx(cli_ctx)
+
+    def _action() -> None:
+        try:
+            from .provenance import ProvenanceManager
+            pm = ProvenanceManager(config=cli_ctx.config.to_dict())
+            if depth is not None:
+                entries = [e.to_dict() for e in pm.trace_descendants(entity_id, max_depth=depth)]
+                result = {"entity_id": entity_id, "depth": depth, "entries": entries}
+            else:
+                result = pm.get_descendants(entity_id) or {"entity_id": entity_id, "entries": []}
+        except ImportError as exc:
+            raise click.ClickException(f"Provenance module not available: {exc}") from exc
+        if _is_json(cli_ctx, local_json):
+            _jecho(result)
+        else:
+            _pprint(cli_ctx, result)
 
     _run_with_error_handling(_action)
 
@@ -3952,7 +4065,7 @@ def server(ctx: click.Context) -> None:
 @click.option("--port", default=8000, type=int, show_default=True)
 @click.option("--workers", default=1, type=int, show_default=True)
 @click.option("--reload", is_flag=True, default=False, help="Enable hot reload.")
-@click.option("--host", default="0.0.0.0", show_default=True)
+@click.option("--host", default="127.0.0.1", show_default=True)
 @click.pass_obj
 def server_start(cli_ctx: CLIContext, port: int, workers: int, reload: bool, host: str) -> None:
     """Start the REST API server.
@@ -3962,6 +4075,16 @@ def server_start(cli_ctx: CLIContext, port: int, workers: int, reload: bool, hos
       semantica server start --port 8000 --workers 4
     """
     cli_ctx = _require_ctx(cli_ctx)
+
+    _LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
+    if host not in _LOOPBACK_HOSTS:
+        console.print(
+            f"[{_WARN_STY}] ⚠[/{_WARN_STY}] Binding to [cyan]{host}[/cyan] exposes "
+            "the server to the network. Set SEMANTICA_API_KEY before doing this "
+            "in any reachable environment — without it, protected routes refuse "
+            "all requests (503), and with SEMANTICA_ALLOW_ANONYMOUS=true they are "
+            "wide open."
+        )
 
     def _action() -> None:
         import subprocess as sp

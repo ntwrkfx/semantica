@@ -1,6 +1,6 @@
 ---
 title: "Triplet Store Module"
-description: "RDF triple storage with SPARQL queries and bulk loading: Blazegraph, Apache Jena, and RDF4J."
+description: "Embedded and server-backed RDF storage with SPARQL queries and bulk loading."
 icon: "table"
 ---
 
@@ -16,14 +16,15 @@ icon: "table"
 | `BlazegraphStore` | Blazegraph REST API: SPARQL 1.1 Update, namespace management |
 | `JenaStore` | Apache Jena: rdflib-backed, SPARQL read support via remote endpoint |
 | `RDF4JStore` | Eclipse RDF4J: REST API, transaction support |
+| `OxigraphStore` | Embedded SPARQL 1.1 store with in-memory and on-disk modes |
 
 ## What You Get
 
-- **TripletStore** — Unified interface across Blazegraph, Apache Jena, and RDF4J: swap backends with one parameter.
+- **TripletStore** — Unified interface across embedded Oxigraph, Blazegraph, Apache Jena, and RDF4J: swap backends with one parameter.
 - **SPARQL** — Full SPARQL SELECT, ASK, CONSTRUCT, and UPDATE query support via `execute_query()`.
 - **Bulk Loading** — `add_triplets()` batches writes with configurable batch size, retry logic, and progress tracking.
 - **SKOS Vocabulary** — Built-in helpers: `add_skos_concept()` and `get_skos_concepts()` for controlled vocabulary management.
-- **Named Graphs** — Blazegraph and RDF4J support named graph scoping via `graph=` on `execute_query()`.
+- **Named Graphs** — Oxigraph, Blazegraph, and RDF4J support named graph scoping via `graph=` on `execute_query()`.
 - **Delta Computation** — `compute_delta(old_graph_uri, new_graph_uri)` returns added and removed triples between two named graph snapshots.
 
 ## Getting Started
@@ -117,6 +118,25 @@ for row in result.bindings:
 ## Backends
 
 <Tabs>
+  <Tab title="Oxigraph">
+    ```bash
+    pip install "semantica[tripletstore-oxigraph]"
+    ```
+
+    ```python
+    # In-memory: no server process or files required
+    store = TripletStore(backend="oxigraph")
+
+    # Persistent: reopen the same directory to reuse the data
+    persistent_store = TripletStore(
+        backend="oxigraph",
+        path="./data/knowledge-graph",
+    )
+    ```
+
+    **Best for:** local development, CI, desktop applications, and persistent
+    single-process workloads without external infrastructure.
+  </Tab>
   <Tab title="Blazegraph">
     ```bash
     pip install requests
@@ -172,6 +192,7 @@ for row in result.bindings:
 
     | Backend | License | Named Graphs | Write via | Best For |
     | :------- | :------- | :------------ | :--------- | :-------- |
+    | Oxigraph | Apache 2.0 / MIT | Yes | Embedded native API | Local, CI, on-disk |
     | Blazegraph | Open source | Yes | SPARQL Update REST | High triple count, SPARQL 1.1 |
     | Apache Jena | Apache 2.0 | No (rdflib backend) | rdflib in-process | Local dev, read queries |
     | RDF4J | Eclipse 1.0 | Yes | REST API N-Triples | Enterprise Java, transactions |
@@ -180,7 +201,9 @@ for row in result.bindings:
 </Tabs>
 
 <Tip>
-  **Use Apache Jena for development, Blazegraph for production.** Jena initializes with rdflib in-memory: no server required for local testing. Switch to Blazegraph for high-throughput persistent workloads by changing `backend=`.
+  **Use Oxigraph for zero-infrastructure development and local persistence.**
+  Switch to a server-backed store for distributed production deployments by
+  changing `backend=`.
 </Tip>
 
 ## Triplet Object
@@ -364,10 +387,10 @@ while True:
 
 ## Named Graph Scoping
 
-Blazegraph and RDF4J support named graphs. Scope `execute_query()` to a named graph with the `graph=` parameter:
+Oxigraph, Blazegraph, and RDF4J support named graphs. Scope `execute_query()` to a named graph with the `graph=` parameter:
 
 ```python
-# Add a triplet: named graph stored in metadata or backend-specific API
+# Add a triplet to a named graph
 from semantica.semantic_extract.types import Triplet
 
 t = Triplet(
@@ -375,7 +398,7 @@ t = Triplet(
     predicate="http://example.org/p",
     object="http://example.org/b",
 )
-store.add_triplet(t)   # named graph targeting requires backend-specific API
+store.add_triplet(t, graph="http://example.org/graph1")
 
 # Query a named graph via FROM clause in SPARQL
 result = store.execute_query("""
@@ -393,11 +416,14 @@ result = store.execute_query("""
 ```
 
 <Note>
-  Named graph support is only available for Blazegraph and RDF4J backends. The `graph=` parameter is silently ignored for the Jena backend.
+  Named graph query scoping is available for Oxigraph, Blazegraph, and RDF4J.
+  The `graph=` query parameter is silently ignored for the Jena backend.
 </Note>
 
 <Tip>
-  **Use named graphs to isolate sources.** Pass `graph="http://example.org/source_A"` to `execute_query()` to scope a query to a specific named graph. Blazegraph and RDF4J support named graphs; Jena (rdflib backend) does not.
+  **Use named graphs to isolate sources.** Pass `graph="http://example.org/source_A"`
+  to writes and `execute_query()` to scope both storage and retrieval. Oxigraph,
+  Blazegraph, and RDF4J support named graph query scoping.
 </Tip>
 
 ## Bulk Loading

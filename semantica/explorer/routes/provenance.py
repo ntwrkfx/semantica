@@ -32,21 +32,7 @@ def _classify_prov(node_type: str) -> tuple[str, str]:
     return "Entity", "group_entity"
 
 
-def _transform_audit_lineage(lineage: Dict[str, Any], node_id: str) -> Dict[str, Any]:
-    # Mapping decision (W3C PROV-O to frontend swim-lanes):
-    # Every ProvenanceEntry maps to a node classified by _classify_prov(entry["entity_type"]),
-    # placing documents/chunks/entities in 'group_entity' (prov_type='Entity'), persons/systems
-    # in 'group_agent', and actions/processes in 'group_activity'.
-    # For derivation relationships (parent_entity_id and used_entities), we connect
-    # parent -> child directly with edge label set to activity_id (or 'wasDerivedFrom'),
-    # keeping the lineage graph scannable without cluttering it with intermediate activity
-    # nodes when activity_id is an operational label.
-    nodes: List[Dict[str, Any]] = []
-    edges: List[Dict[str, Any]] = []
-    seen_nodes = set()
-    seen_edges = set()
-
-    chain = lineage.get("lineage_chain") or lineage.get("entries") or []
+def _add_chain_nodes(chain: List[Any], nodes: List[Dict[str, Any]], seen_nodes: set) -> None:
     for entry in chain:
         if not isinstance(entry, dict):
             continue
@@ -69,6 +55,10 @@ def _transform_audit_lineage(lineage: Dict[str, Any], node_id: str) -> Dict[str,
             "checksum": entry.get("checksum") or None,
         })
 
+
+def _add_chain_edges(
+    chain: List[Any], edges: List[Dict[str, Any]], seen_edges: set, direction: str
+) -> None:
     for entry in chain:
         if not isinstance(entry, dict):
             continue
@@ -86,28 +76,61 @@ def _transform_audit_lineage(lineage: Dict[str, Any], node_id: str) -> Dict[str,
 
         activity = str(entry.get("activity_id") or "wasDerivedFrom")
         for src in parents:
-            edge_key = (src, eid)
+            edge_key = (src, eid, direction)
             if edge_key in seen_edges:
                 continue
             seen_edges.add(edge_key)
 
-            # NOTE: ProvenanceManager.get_lineage() currently only traces upstream
-            # ancestor chains via parent_entity_id and used_entities. It does not perform
-            # reverse lookups for downstream descendants. Consequently, 'direction = "downstream"'
-            # is unreachable in practice for this audit path until reverse lookup is supported
-            # by ProvenanceManager. All ancestor derivation edges are upstream lineage.
-            if src == node_id:
-                direction = "downstream"
-            else:
-                direction = "upstream"
-
             edges.append({
-                "id": f"{src}-{eid}",
+                # Includes direction to match the seen_edges uniqueness key
+                # above: the same (src, eid) pair can legitimately appear in
+                # both directions (e.g. cycles/overlap between the ancestor
+                # and descendant chains), and without this the two edges
+                # would collide on the same id.
+                "id": f"{src}-{eid}-{direction}",
                 "source": src,
                 "target": eid,
                 "label": activity,
                 "direction": direction,
             })
+
+
+def _transform_audit_lineage(
+    lineage: Dict[str, Any],
+    node_id: str,
+    descendants: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    # Mapping decision (W3C PROV-O to frontend swim-lanes):
+    # Every ProvenanceEntry maps to a node classified by _classify_prov(entry["entity_type"]),
+    # placing documents/chunks/entities in 'group_entity' (prov_type='Entity'), persons/systems
+    # in 'group_agent', and actions/processes in 'group_activity'.
+    # For derivation relationships (parent_entity_id and used_entities), we connect
+    # parent -> child directly with edge label set to activity_id (or 'wasDerivedFrom'),
+    # keeping the lineage graph scannable without cluttering it with intermediate activity
+    # nodes when activity_id is an operational label.
+    #
+    # Upstream edges come from lineage's ancestor chain (parent_entity_id/
+    # used_entities, via ProvenanceManager.get_lineage()); downstream edges
+    # come from ProvenanceManager.get_descendants()'s descendant chain (issue
+    # #825, Part A item 5). Previously 'direction="downstream"' was dead code
+    # here since no reverse lookup existed.
+    nodes: List[Dict[str, Any]] = []
+    edges: List[Dict[str, Any]] = []
+    seen_nodes: set = set()
+    seen_edges: set = set()
+
+    ancestor_chain = lineage.get("lineage_chain") or lineage.get("entries") or []
+    descendant_chain = (
+        (descendants or {}).get("descendant_chain")
+        or (descendants or {}).get("entries")
+        or []
+    )
+
+    _add_chain_nodes(ancestor_chain, nodes, seen_nodes)
+    _add_chain_nodes(descendant_chain, nodes, seen_nodes)
+
+    _add_chain_edges(ancestor_chain, edges, seen_edges, "upstream")
+    _add_chain_edges(descendant_chain, edges, seen_edges, "downstream")
 
     for edge in edges:
         for endpoint in (edge["source"], edge["target"]):
@@ -132,9 +155,9 @@ def _transform_audit_lineage(lineage: Dict[str, Any], node_id: str) -> Dict[str,
 def _build_provenance(session: GraphSession, node_id: Optional[str] = None) -> dict:
     """Build provenance lineage for a node, attempting the audit-grade store first.
 
-    NOTE: The audit path (source='audit') shows verified upstream lineage only.
-    For descendant/downstream relationships, the naive graph-traversal fallback
-    remains the only source until ProvenanceManager gains a reverse lookup.
+    Combines ProvenanceManager.get_lineage() (upstream ancestors) with
+    get_descendants() (downstream — issue #825, Part A item 5) so both
+    directions are populated from the audit-grade store, not just upstream.
     """
     if not node_id:
         return {"nodes": [], "edges": [], "source": "graph_traversal"}
@@ -149,7 +172,14 @@ def _build_provenance(session: GraphSession, node_id: Optional[str] = None) -> d
                     entries = lineage.get("lineage_chain") or lineage.get("entries") or []
                     integrity_ok = all(verify_checksum(entry) for entry in entries)
                 if integrity_ok:
-                    return _transform_audit_lineage(lineage, node_id)
+                    descendants = {}
+                    try:
+                        descendants = manager.get_descendants(node_id) or {}
+                    except Exception as exc:
+                        logger.warning(
+                            f"ProvenanceManager get_descendants failed for {node_id}: {exc}"
+                        )
+                    return _transform_audit_lineage(lineage, node_id, descendants)
                 logger.warning(
                     f"Provenance integrity verification failed for {node_id}, falling back to graph traversal"
                 )

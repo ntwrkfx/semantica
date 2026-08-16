@@ -1,6 +1,6 @@
 # Triplet Store Module Usage Guide
 
-This comprehensive guide demonstrates how to use the triplet store module for RDF data storage and querying, supporting multiple triplet store backends (Blazegraph, Jena, RDF4J) with unified interfaces, SPARQL query execution, bulk loading, and query optimization.
+This comprehensive guide demonstrates how to use the triplet store module for RDF data storage and querying, supporting embedded Oxigraph and server-backed Blazegraph, Jena, RDF4J, and Anzo stores with unified interfaces, SPARQL query execution, bulk loading, and query optimization.
 
 ## Table of Contents
 
@@ -147,6 +147,36 @@ print(f"Failed: {progress.failed_triplets}")
 ```
 
 ## Store Backends
+
+### Oxigraph (embedded)
+
+Oxigraph runs in the Python process and does not require a separate server.
+Install the optional backend first:
+
+```bash
+pip install "semantica[tripletstore-oxigraph]"
+```
+
+Omit `path` for an in-memory store, which is useful for tests and temporary
+workloads:
+
+```python
+store = TripletStore(backend="oxigraph")
+```
+
+Set `path` to persist the database in a local directory:
+
+```python
+store = TripletStore(
+    backend="oxigraph",
+    path="./data/knowledge-graph",
+)
+```
+
+The Oxigraph backend supports the same CRUD and SPARQL query methods as the
+other backends, including named graphs through the `graph` argument. For
+distributed production deployments, use one of the server-backed stores
+below.
 
 ### Blazegraph
 High-performance graph database supporting RDF/SPARQL.

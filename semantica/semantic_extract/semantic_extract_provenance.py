@@ -37,6 +37,7 @@ License: MIT
 """
 
 from typing import Optional, List, Dict, Any
+from datetime import datetime
 import uuid
 
 
@@ -48,17 +49,28 @@ class ProvenanceMixin:
     added to any extraction class without modifying its core functionality.
     """
     
-    def __init__(self, provenance: bool = False, **kwargs):
+    def __init__(
+        self,
+        provenance: bool = False,
+        agent_id: Optional[str] = None,
+        is_automated: bool = True,
+        **kwargs,
+    ):
         """
         Initialize provenance tracking.
-        
+
         Args:
             provenance: Enable provenance tracking (default: False)
+            agent_id: Agent identifier for accountability (issue #825); defaults
+                to the wrapping class name
+            is_automated: Whether this agent acted without direct human review
             **kwargs: Additional arguments passed to parent class
         """
         self.provenance = provenance
         self._prov_manager = None
-        
+        self._agent_id = agent_id or self.__class__.__name__
+        self._is_automated = is_automated
+
         if provenance:
             try:
                 from semantica.provenance import ProvenanceManager
@@ -66,7 +78,7 @@ class ProvenanceMixin:
             except ImportError:
                 # Graceful degradation if provenance module not available
                 self.provenance = False
-    
+
     def _track_extraction(
         self,
         entity_id: str,
@@ -76,7 +88,7 @@ class ProvenanceMixin:
     ) -> None:
         """
         Track extraction with provenance.
-        
+
         Args:
             entity_id: Unique identifier for extracted entity
             source: Source document or text
@@ -84,10 +96,17 @@ class ProvenanceMixin:
             **metadata: Additional metadata to track
         """
         if self.provenance and self._prov_manager:
+            activity_started_at_time = metadata.pop("activity_started_at_time", None)
+            activity_ended_at_time = metadata.pop("activity_ended_at_time", None)
             self._prov_manager.track_entity(
                 entity_id=entity_id,
                 source=source,
                 entity_type=entity_type,
+                agent_id=self._agent_id,
+                agent_type="software_agent",
+                is_automated=self._is_automated,
+                activity_started_at_time=activity_started_at_time,
+                activity_ended_at_time=activity_ended_at_time,
                 metadata=metadata
             )
 
@@ -105,17 +124,25 @@ class NERExtractorWithProvenance(ProvenanceMixin):
         >>> # Each entity is tracked with source, confidence, and metadata
     """
     
-    def __init__(self, provenance: bool = False, **config):
+    def __init__(
+        self,
+        provenance: bool = False,
+        agent_id: Optional[str] = None,
+        is_automated: bool = True,
+        **config,
+    ):
         """
         Initialize NER extractor with optional provenance.
-        
+
         Args:
             provenance: Enable provenance tracking (default: False)
             **config: Configuration passed to original NERExtractor
         """
         from .ner_extractor import NERExtractor
-        
-        ProvenanceMixin.__init__(self, provenance=provenance)
+
+        ProvenanceMixin.__init__(
+            self, provenance=provenance, agent_id=agent_id, is_automated=is_automated
+        )
         self._extractor = NERExtractor(**config)
     
     def extract(self, text: str, source: Optional[str] = None, **kwargs):
@@ -130,8 +157,10 @@ class NERExtractorWithProvenance(ProvenanceMixin):
         Returns:
             List of extracted entities (same as original NERExtractor)
         """
+        activity_started_at_time = datetime.utcnow().isoformat()
         entities = self._extractor.extract(text, **kwargs)
-        
+        activity_ended_at_time = datetime.utcnow().isoformat()
+
         if self.provenance:
             for entity in entities:
                 entity_id = getattr(entity, 'id', None)
@@ -141,7 +170,7 @@ class NERExtractorWithProvenance(ProvenanceMixin):
                         entity.id = entity_id
                     except AttributeError:
                         pass
-                
+
                 self._track_extraction(
                     entity_id=entity_id,
                     source=source or text[:100],
@@ -150,7 +179,9 @@ class NERExtractorWithProvenance(ProvenanceMixin):
                     label=entity.label,
                     confidence=getattr(entity, 'confidence', 1.0),
                     start=entity.start,
-                    end=entity.end
+                    end=entity.end,
+                    activity_started_at_time=activity_started_at_time,
+                    activity_ended_at_time=activity_ended_at_time,
                 )
         
         return entities
@@ -167,17 +198,25 @@ class RelationExtractorWithProvenance(ProvenanceMixin):
     Wraps the original RelationExtractor and tracks all extracted relations.
     """
     
-    def __init__(self, provenance: bool = False, **config):
+    def __init__(
+        self,
+        provenance: bool = False,
+        agent_id: Optional[str] = None,
+        is_automated: bool = True,
+        **config,
+    ):
         """
         Initialize relation extractor with optional provenance.
-        
+
         Args:
             provenance: Enable provenance tracking (default: False)
             **config: Configuration passed to original RelationExtractor
         """
         from .relation_extractor import RelationExtractor
-        
-        ProvenanceMixin.__init__(self, provenance=provenance)
+
+        ProvenanceMixin.__init__(
+            self, provenance=provenance, agent_id=agent_id, is_automated=is_automated
+        )
         self._extractor = RelationExtractor(**config)
     
     def extract(self, text: str, source: Optional[str] = None, **kwargs):
@@ -192,8 +231,10 @@ class RelationExtractorWithProvenance(ProvenanceMixin):
         Returns:
             List of extracted relations
         """
+        activity_started_at_time = datetime.utcnow().isoformat()
         relations = self._extractor.extract(text, **kwargs)
-        
+        activity_ended_at_time = datetime.utcnow().isoformat()
+
         if self.provenance:
             for relation in relations:
                 relation_id = getattr(relation, 'id', None)
@@ -203,7 +244,7 @@ class RelationExtractorWithProvenance(ProvenanceMixin):
                         relation.id = relation_id
                     except AttributeError:
                         pass
-                
+
                 self._track_extraction(
                     entity_id=relation_id,
                     source=source or text[:100],
@@ -211,7 +252,9 @@ class RelationExtractorWithProvenance(ProvenanceMixin):
                     subject=relation.subject,
                     predicate=relation.predicate,
                     object=relation.object,
-                    confidence=getattr(relation, 'confidence', 1.0)
+                    confidence=getattr(relation, 'confidence', 1.0),
+                    activity_started_at_time=activity_started_at_time,
+                    activity_ended_at_time=activity_ended_at_time,
                 )
         
         return relations
@@ -228,17 +271,25 @@ class EventDetectorWithProvenance(ProvenanceMixin):
     Wraps the original EventDetector and tracks all detected events.
     """
     
-    def __init__(self, provenance: bool = False, **config):
+    def __init__(
+        self,
+        provenance: bool = False,
+        agent_id: Optional[str] = None,
+        is_automated: bool = True,
+        **config,
+    ):
         """
         Initialize event detector with optional provenance.
-        
+
         Args:
             provenance: Enable provenance tracking (default: False)
             **config: Configuration passed to original EventDetector
         """
         from .event_detector import EventDetector
-        
-        ProvenanceMixin.__init__(self, provenance=provenance)
+
+        ProvenanceMixin.__init__(
+            self, provenance=provenance, agent_id=agent_id, is_automated=is_automated
+        )
         self._detector = EventDetector(**config)
     
     def detect(self, text: str, source: Optional[str] = None, **kwargs):
@@ -253,8 +304,10 @@ class EventDetectorWithProvenance(ProvenanceMixin):
         Returns:
             List of detected events
         """
+        activity_started_at_time = datetime.utcnow().isoformat()
         events = self._detector.detect(text, **kwargs)
-        
+        activity_ended_at_time = datetime.utcnow().isoformat()
+
         if self.provenance:
             for event in events:
                 event_id = getattr(event, 'id', None)
@@ -264,14 +317,16 @@ class EventDetectorWithProvenance(ProvenanceMixin):
                         event.id = event_id
                     except AttributeError:
                         pass
-                
+
                 self._track_extraction(
                     entity_id=event_id,
                     source=source or text[:100],
                     entity_type="event",
                     event_type=event.type,
                     trigger=event.trigger,
-                    confidence=getattr(event, 'confidence', 1.0)
+                    confidence=getattr(event, 'confidence', 1.0),
+                    activity_started_at_time=activity_started_at_time,
+                    activity_ended_at_time=activity_ended_at_time,
                 )
         
         return events
@@ -288,17 +343,25 @@ class CoreferenceResolverWithProvenance(ProvenanceMixin):
     Wraps the original CoreferenceResolver and tracks coreference chains.
     """
     
-    def __init__(self, provenance: bool = False, **config):
+    def __init__(
+        self,
+        provenance: bool = False,
+        agent_id: Optional[str] = None,
+        is_automated: bool = True,
+        **config,
+    ):
         """
         Initialize coreference resolver with optional provenance.
-        
+
         Args:
             provenance: Enable provenance tracking (default: False)
             **config: Configuration passed to original CoreferenceResolver
         """
         from .coreference_resolver import CoreferenceResolver
-        
-        ProvenanceMixin.__init__(self, provenance=provenance)
+
+        ProvenanceMixin.__init__(
+            self, provenance=provenance, agent_id=agent_id, is_automated=is_automated
+        )
         self._resolver = CoreferenceResolver(**config)
     
     def resolve(self, text: str, source: Optional[str] = None, **kwargs):
@@ -313,8 +376,10 @@ class CoreferenceResolverWithProvenance(ProvenanceMixin):
         Returns:
             Coreference chains
         """
+        activity_started_at_time = datetime.utcnow().isoformat()
         chains = self._resolver.resolve(text, **kwargs)
-        
+        activity_ended_at_time = datetime.utcnow().isoformat()
+
         if self.provenance:
             for chain in chains:
                 chain_id = getattr(chain, 'id', None)
@@ -324,12 +389,14 @@ class CoreferenceResolverWithProvenance(ProvenanceMixin):
                         chain.id = chain_id
                     except AttributeError:
                         pass
-                
+
                 self._track_extraction(
                     entity_id=chain_id,
                     source=source or text[:100],
                     entity_type="coreference_chain",
-                    mentions=len(chain.mentions) if hasattr(chain, 'mentions') else 0
+                    mentions=len(chain.mentions) if hasattr(chain, 'mentions') else 0,
+                    activity_started_at_time=activity_started_at_time,
+                    activity_ended_at_time=activity_ended_at_time,
                 )
         
         return chains
@@ -346,17 +413,25 @@ class TripletExtractorWithProvenance(ProvenanceMixin):
     Wraps the original TripletExtractor and tracks all extracted triplets.
     """
     
-    def __init__(self, provenance: bool = False, **config):
+    def __init__(
+        self,
+        provenance: bool = False,
+        agent_id: Optional[str] = None,
+        is_automated: bool = True,
+        **config,
+    ):
         """
         Initialize triplet extractor with optional provenance.
-        
+
         Args:
             provenance: Enable provenance tracking (default: False)
             **config: Configuration passed to original TripletExtractor
         """
         from .triplet_extractor import TripletExtractor
-        
-        ProvenanceMixin.__init__(self, provenance=provenance)
+
+        ProvenanceMixin.__init__(
+            self, provenance=provenance, agent_id=agent_id, is_automated=is_automated
+        )
         self._extractor = TripletExtractor(**config)
     
     def extract(self, text: str, source: Optional[str] = None, **kwargs):
@@ -371,8 +446,10 @@ class TripletExtractorWithProvenance(ProvenanceMixin):
         Returns:
             List of extracted triplets
         """
+        activity_started_at_time = datetime.utcnow().isoformat()
         triplets = self._extractor.extract(text, **kwargs)
-        
+        activity_ended_at_time = datetime.utcnow().isoformat()
+
         if self.provenance:
             for triplet in triplets:
                 triplet_id = getattr(triplet, 'id', None)
@@ -382,7 +459,7 @@ class TripletExtractorWithProvenance(ProvenanceMixin):
                         triplet.id = triplet_id
                     except AttributeError:
                         pass
-                
+
                 self._track_extraction(
                     entity_id=triplet_id,
                     source=source or text[:100],
@@ -390,7 +467,9 @@ class TripletExtractorWithProvenance(ProvenanceMixin):
                     subject=triplet.subject,
                     predicate=triplet.predicate,
                     object=triplet.object,
-                    confidence=getattr(triplet, 'confidence', 1.0)
+                    confidence=getattr(triplet, 'confidence', 1.0),
+                    activity_started_at_time=activity_started_at_time,
+                    activity_ended_at_time=activity_ended_at_time,
                 )
         
         return triplets

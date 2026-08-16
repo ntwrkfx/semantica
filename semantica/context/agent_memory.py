@@ -727,7 +727,7 @@ class AgentMemory:
 
         timestamp = str(time.time())
         random_str = str(hash(str(self.memory_items)) % 10000)
-        memory_hash = hashlib.md5(f"{timestamp}_{random_str}".encode()).hexdigest()[:12]
+        memory_hash = hashlib.md5(f"{timestamp}_{random_str}".encode()).hexdigest()[:12]  # nosec B324 - short unique ID, not security-sensitive
 
         return f"mem_{memory_hash}"
 
@@ -1865,10 +1865,24 @@ class AgentMemory:
             if "\n" not in data and "\r" not in data:
                 candidate = Path(data)
                 try:
-                    if candidate.exists():
-                        documents = self._read_markdown_path(candidate)
-                except OSError:
-                    pass
+                    candidate_exists = candidate.exists()
+                except OSError as exc:
+                    error_message = (
+                        "Failed to inspect possible Markdown import "
+                        f"path {candidate}: {exc.strerror or str(exc)}"
+                    )
+                    if exc.errno is None:
+                        error = OSError(error_message)
+                    else:
+                        error = OSError(
+                            exc.errno,
+                            error_message,
+                            exc.filename or str(candidate),
+                        )
+                    raise error from exc
+
+                if candidate_exists:
+                    documents = self._read_markdown_path(candidate)
 
             if documents is None:
                 documents = [("markdown document", data)]

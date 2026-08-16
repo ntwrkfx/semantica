@@ -71,13 +71,19 @@ class NamespaceManager:
         """
         self.logger = get_logger("namespace_manager")
 
-        # Standard RDF namespaces
+        # Standard RDF namespaces. "semantica" reuses ProvenanceManager's
+        # DEFAULT_BASE_URI (issue #825, Part B Tier 3 — exporter
+        # interlinking) so KG-exported and PROV-exported URIs for the same
+        # entity_id co-resolve to the same namespace instead of two
+        # independently-hardcoded placeholder domains.
+        from ..provenance.manager import DEFAULT_BASE_URI
+
         self.namespaces: Dict[str, str] = {
             "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
             "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
             "owl": "http://www.w3.org/2002/07/owl#",
             "xsd": "http://www.w3.org/2001/XMLSchema#",
-            "semantica": "https://semantica.dev/ns#",
+            "semantica": DEFAULT_BASE_URI,
         }
         self.config = config or {}
 

@@ -195,6 +195,9 @@ class TestVectorStoreDeepDive(unittest.TestCase):
         mock_collection_instance.search.assert_called()
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["id"], 1)
+        self.assertIn("metadata", results[0])
+        self.assertIsInstance(results[0]["metadata"], dict)
+        self.assertIn("vector", results[0])
 
     @patch('semantica.vector_store.qdrant_store.QdrantClientLib')
     @patch('semantica.vector_store.qdrant_store.VectorParams')
@@ -231,6 +234,16 @@ class TestVectorStoreDeepDive(unittest.TestCase):
         results = store.search_vectors(np.array([1.0, 0.0]), limit=1)
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["id"], "vec_1")
+
+        self.assertIn("metadata", results[0])
+        self.assertNotIn("payload", results[0])
+        self.assertEqual(results[0]["metadata"], {"type": "a"})
+
+        hybrid = HybridSearch()
+        matched = hybrid.filter_by_metadata(
+            results, MetadataFilter().eq("type", "a")
+        )
+        self.assertEqual(len(matched), 1)
 
     @patch('semantica.vector_store.weaviate_store.weaviate')
     @patch('semantica.vector_store.weaviate_store.MetadataQuery')
@@ -370,6 +383,63 @@ class TestVectorStoreDeepDive(unittest.TestCase):
         # Test method config
         vector_store_config.set_method_config("test_method", {"param": 1})
         self.assertEqual(vector_store_config.get_method_config("test_method")["param"], 1)
+
+    def test_hybrid_search_backend_delegation(self):
+        """Test HybridSearch delegation to non-inmemory backends."""
+        mock_store = MagicMock()
+        del mock_store.vectors  # Ensure hasattr(mock_store, "vectors") is False
+        
+        # Setup mock return value with mixed schema (some with metadata, some without/payload)
+        mock_store.search_vectors.return_value = [
+            {"id": "vec_1", "score": 0.9, "distance": 0.1, "metadata": {"type": "a", "val": 10}},
+            {"id": "vec_2", "score": 0.8, "metadata": {"type": "b", "val": 20}},
+            {"id": "vec_3", "score": 0.7, "distance": 0.3, "metadata": {"type": "a", "val": 30}},
+            {"id": "vec_4", "score": 0.6, "payload": {"ignored": True}}
+        ]
+        
+        search = HybridSearch(vector_store=mock_store)
+        
+        # 1. Basic delegation & normalization & list->ndarray conversion
+        query_list = [1.0, 0.0]
+        results = search.search(query=query_list, k=2)
+        
+        mock_store.search_vectors.assert_called_once()
+        args, kwargs = mock_store.search_vectors.call_args
+        self.assertIsInstance(kwargs.get("query_vector"), np.ndarray)
+        self.assertEqual(kwargs.get("k"), 4)  # fetch_k = k * 2 = 4 (no filter)
+        
+        self.assertEqual(len(results), 2)
+        self.assertEqual(results[0]["id"], "vec_1")
+        self.assertEqual(results[0]["distance"], 0.1)
+        self.assertEqual(results[0]["metadata"], {"type": "a", "val": 10})
+        
+        self.assertEqual(results[1]["id"], "vec_2")
+        self.assertIsNone(results[1]["distance"])
+        self.assertEqual(results[1]["metadata"], {"type": "b", "val": 20})
+        
+        # 2. Metadata filtering
+        mock_store.search_vectors.reset_mock()
+        results = search.search(
+            query=np.array([1.0, 0.0]), 
+            k=2, 
+            metadata_filter=MetadataFilter().eq("type", "a")
+        )
+        
+        mock_store.search_vectors.assert_called_once()
+        args, kwargs = mock_store.search_vectors.call_args
+        self.assertEqual(kwargs.get("k"), 8)  # fetch_k = k * 4 = 8 (with filter)
+        
+        self.assertEqual(len(results), 2)
+        self.assertEqual(results[0]["id"], "vec_1")
+        self.assertEqual(results[1]["id"], "vec_3")
+        
+        # 3. top_k handling
+        mock_store.search_vectors.reset_mock()
+        results = search.search(query=np.array([1.0, 0.0]), top_k=3)
+        
+        args, kwargs = mock_store.search_vectors.call_args
+        self.assertEqual(kwargs.get("k"), 6)
+        self.assertNotIn("top_k", kwargs)
 
 if __name__ == '__main__':
     unittest.main()

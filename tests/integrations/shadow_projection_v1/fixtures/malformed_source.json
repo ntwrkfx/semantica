@@ -1,0 +1,14 @@
+{
+  "source_id": "bad-source",
+  "source_version": "bad-1",
+  "observed_at": "2026-08-15T20:10:00Z",
+  "records": [{
+    "canonical_key": "workstream:ws-bad",
+    "resource_type": "Workstream",
+    "assertions": [{
+      "value": "COMPLETE",
+      "confidence": 1.0,
+      "authority_class": "authoritative_source"
+    }]
+  }]
+}

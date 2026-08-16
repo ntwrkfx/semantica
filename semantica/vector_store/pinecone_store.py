@@ -194,8 +194,19 @@ class PineconeIndex:
                 results.append(
                     {
                         "id": match.id,
-                        "score": match.score,
+                        # Pinecone's native score is already "higher is better" but its
+                        # range depends on the configured metric (bounded for cosine,
+                        # unbounded for dotproduct). Squash with x/(1+|x|) instead of
+                        # clamping distance-to-zero, since the latter collapses every
+                        # score >= 1.0 to an identical 1.0 and destroys ranking order
+                        # for dotproduct/unnormalized-vector indexes.
+                        "score": (
+                            float(match.score) / (1.0 + abs(float(match.score))) + 1.0
+                        )
+                        / 2.0,
                         "metadata": match.metadata or {},
+                        "vector": None,
+                        "distance": None,
                     }
                 )
 
@@ -607,6 +618,28 @@ class PineconeStore:
             )
 
         return self.index.delete_vectors(vector_ids, namespace, **options)
+
+    def get_vector(self, vector_id: str) -> Optional[np.ndarray]:
+        """Get vector by ID."""
+        try:
+            res = self.fetch_vectors([vector_id])
+            if "vectors" in res and vector_id in res["vectors"]:
+                return np.array(res["vectors"][vector_id]["values"])
+            return None
+        except Exception as e:
+            self.logger.warning(f"Failed to get vector {vector_id}: {e}")
+            return None
+
+    def get_metadata(self, vector_id: str) -> Optional[Dict[str, Any]]:
+        """Get metadata by ID."""
+        try:
+            res = self.fetch_vectors([vector_id])
+            if "vectors" in res and vector_id in res["vectors"]:
+                return res["vectors"][vector_id].get("metadata", {})
+            return None
+        except Exception as e:
+            self.logger.warning(f"Failed to get metadata for {vector_id}: {e}")
+            return None
 
     def fetch_vectors(
         self, vector_ids: List[str], namespace: str = "", **options

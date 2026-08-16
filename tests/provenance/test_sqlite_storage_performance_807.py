@@ -101,9 +101,13 @@ def test_batch_rollback_does_not_count_unpersisted_entries(tmp_path):
     entities = [{"id": f"ent_{i}"} for i in range(10)]
     chunks = [{"id": f"chk_{i}", "start_index": 0, "end_index": 10} for i in range(10)]
 
+    # Capture the unpatched method before patching to avoid infinite recursion:
+    # failing_tx() needs the real transaction() implementation, but patch replaces it.
+    orig_transaction = mgr.storage.transaction
+
     @contextmanager
     def failing_tx():
-        with mgr.storage.transaction() as conn:
+        with orig_transaction() as conn:
             yield conn
             raise sqlite3.OperationalError("Commit failed")
 

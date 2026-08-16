@@ -1,0 +1,17 @@
+{
+  "source_id": "ops-state-a",
+  "source_version": "commit-a1",
+  "observed_at": "2026-08-15T20:00:00Z",
+  "records": [{
+    "canonical_key": "workstream:ws-1",
+    "resource_type": "Workstream",
+    "assertions": [{
+      "predicate": "status",
+      "value": "COMPLETE",
+      "confidence": 1.0,
+      "authority_class": "authoritative_source",
+      "valid_from": "2026-08-15T20:00:00Z",
+      "valid_until": null
+    }]
+  }]
+}

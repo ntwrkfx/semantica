@@ -2,7 +2,11 @@
 
 from types import SimpleNamespace
 
-from semantica.explorer.routes.provenance import _build_provenance, _render_markdown
+from semantica.explorer.routes.provenance import (
+    _add_chain_edges,
+    _build_provenance,
+    _render_markdown,
+)
 
 
 def _make_session_with_chain() -> SimpleNamespace:
@@ -72,3 +76,25 @@ def test_render_markdown_groups_edges_by_direction():
     assert "## Lateral" in markdown
     assert "`Intermediate` -[related_to]-> `node_id`" in markdown
     assert "`Source` -[related_to]-> `Intermediate`" in markdown
+
+
+def test_add_chain_edges_ids_distinguish_direction():
+    """Regression test: the same (src, target) pair appearing in both the
+    ancestor and descendant chains (e.g. a cycle or overlap between them)
+    must not collide on edge id — the id must carry the same uniqueness
+    information as the seen_edges dedupe key, which already includes
+    direction."""
+    same_pair_chain = [
+        {"entity_id": "b", "parent_entity_id": "a", "activity_id": "act"},
+    ]
+
+    edges: list = []
+    seen_edges: set = set()
+    _add_chain_edges(same_pair_chain, edges, seen_edges, "upstream")
+    _add_chain_edges(same_pair_chain, edges, seen_edges, "downstream")
+
+    assert len(edges) == 2
+    ids = {edge["id"] for edge in edges}
+    assert len(ids) == 2, f"edge ids collided across directions: {edges}"
+    directions = {edge["id"]: edge["direction"] for edge in edges}
+    assert directions == {"a-b-upstream": "upstream", "a-b-downstream": "downstream"}

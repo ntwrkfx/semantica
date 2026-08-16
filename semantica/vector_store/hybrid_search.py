@@ -298,9 +298,21 @@ class HybridSearch:
         Returns:
             List of search results
         """
-        # Handle legacy argument top_k
+        # Handle legacy argument top_k. Must be popped, not just read: it's
+        # later forwarded via **options to VectorStore.search_vectors(),
+        # which itself passes an explicit top_k=k to some backends (e.g.
+        # sqlite, pgvector) — a leftover 'top_k' in options collides with
+        # that and raises "got multiple values for keyword argument".
         if "top_k" in options:
-            k = options["top_k"]
+            k = options.pop("top_k")
+        # query_vector is derived from `query` above; drop any stray value
+        # passed in **options so it doesn't collide with that derivation.
+        # (**options is a fresh dict per call, so this can't affect the caller.)
+        if "query_vector" in options:
+            self.logger.debug(
+                "Ignoring 'query_vector' passed in options; it is derived from 'query' instead."
+            )
+            options.pop("query_vector")
 
         tracking_id = self.progress_tracker.start_tracking(
             module="vector_store",
@@ -309,23 +321,8 @@ class HybridSearch:
         )
 
         try:
-            # Resolve vector store data if not provided
-            if vectors is None and self.vector_store:
-                vector_ids = list(self.vector_store.vectors.keys())
-                vectors = [self.vector_store.vectors[vid] for vid in vector_ids]
-                metadata = [self.vector_store.metadata.get(vid, {}) for vid in vector_ids]
-
-            if vectors is None or metadata is None:
-                 # Check if vectors/metadata are falsy (empty list) but not None
-                 # If they are None, we can't proceed. If they are empty lists, we return empty results.
-                 if vectors is None:
-                     vectors = []
-                 if metadata is None:
-                     metadata = []
-                 if vector_ids is None:
-                     vector_ids = []
-
-            # Handle string query
+            # Resolve the query vector first: it's needed both for local
+            # search below and for the backend-delegated path.
             if isinstance(query, str):
                 self.progress_tracker.update_tracking(
                     tracking_id, message="Generating query embedding..."
@@ -336,13 +333,83 @@ class HybridSearch:
                         self.embedding_generator = EmbeddingGenerator()
                     except (ImportError, OSError):
                         raise ImportError("EmbeddingGenerator not available for string queries")
-                
+
                 query_vector = self.embedding_generator.generate_embeddings(query, data_type="text")
                 # Handle if it returns batch (2D) or single (1D)
                 if len(query_vector.shape) == 2:
                      query_vector = query_vector[0]
             else:
-                query_vector = query
+                # Backend stores (e.g. FAISSStore.search_similar) assume an
+                # ndarray and call .ndim on it, so normalize list input here
+                # rather than relying on _vector_search's own conversion,
+                # which the backend-delegated path below bypasses.
+                query_vector = np.asarray(query) if isinstance(query, list) else query
+
+            # Resolve vector store data if not provided
+            if vectors is None and self.vector_store:
+                if hasattr(self.vector_store, "vectors"):
+                    # In-memory backend exposes its corpus directly
+                    vector_ids = list(self.vector_store.vectors.keys())
+                    vectors = [self.vector_store.vectors[vid] for vid in vector_ids]
+                    metadata = [self.vector_store.metadata.get(vid, {}) for vid in vector_ids]
+                else:
+                    # Backend-agnostic path: other backends (faiss, weaviate,
+                    # qdrant, milvus, pinecone, pgvector, sqlite) don't expose
+                    # a raw `.vectors` dict, so delegate similarity search to
+                    # the store's public API instead.
+                    self.progress_tracker.update_tracking(
+                        tracking_id, message="Performing vector similarity search..."
+                    )
+                    fetch_k = k * (4 if metadata_filter else 2)
+                    backend_results = self.vector_store.search_vectors(
+                        query_vector=query_vector, k=fetch_k, **options
+                    )
+
+                    if metadata_filter:
+                        self.progress_tracker.update_tracking(
+                            tracking_id, message="Filtering by metadata..."
+                        )
+                        backend_results = [
+                            result
+                            for result in backend_results
+                            if metadata_filter.matches(result.get("metadata", {}))
+                        ]
+
+                    # Normalize to the same result schema the local search
+                    # path produces, since backends don't all return the
+                    # same set of keys. Unlike the local path (which always
+                    # knows distance = 1.0 - cosine_similarity), backends use
+                    # different metrics (L2, inner product, cosine, ...), so
+                    # a missing distance is left as None rather than guessed
+                    # from score — assuming cosine semantics would produce
+                    # nonsensical values for e.g. raw L2 distances.
+                    normalized_results = [
+                        {
+                            "id": result.get("id"),
+                            "score": result.get("score", 0.0),
+                            "distance": result.get("distance"),
+                            "metadata": result.get("metadata", {}),
+                        }
+                        for result in backend_results[:k]
+                    ]
+
+                    self.progress_tracker.stop_tracking(
+                        tracking_id,
+                        status="completed",
+                        message=f"Hybrid search completed: {len(normalized_results)} results",
+                    )
+                    return normalized_results
+
+            if vectors is None:
+                vectors = []
+            if metadata is None:
+                metadata = []
+            if vector_ids is None:
+                # IDs weren't provided alongside explicit vectors/metadata;
+                # generate stable positional ones so downstream indexing
+                # (e.g. filtered_ids[i], _vector_search's vector_ids[idx])
+                # doesn't operate on None.
+                vector_ids = [f"vec_{i}" for i in range(len(vectors))]
 
             # Check if vectors/metadata are empty
             # Handle both list and numpy array cases safely

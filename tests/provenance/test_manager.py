@@ -466,6 +466,30 @@ class TestProvenanceManager:
         lineage = prov_mgr.get_lineage("entity_1")
         assert lineage == {}
 
+    def test_clear_resets_chain_state(self):
+        """Regression: clear() must fully reset chain state so the first write
+        after clear starts a fresh chain and verify_chain() passes."""
+        prov_mgr = ProvenanceManager()
+
+        prov_mgr.track_entity("e1", source="doc1")
+        prov_mgr.track_entity("e2", source="doc1")
+        prov_mgr.clear()
+
+        # Chain head must be empty immediately after clear
+        assert prov_mgr.storage.get_chain_head() is None
+
+        # First write after clear starts a fresh chain (sequence_id=1, previous_checksum=None)
+        entry = prov_mgr.track_entity("e3", source="doc2")
+        assert entry.sequence_id == 1
+        assert entry.previous_checksum is None
+
+        # verify_chain() must pass on the fresh chain
+        prov_mgr.track_entity("e4", source="doc2")
+        result = prov_mgr.verify_chain()
+        assert result["valid"] is True
+        assert result["total_entries"] == 2
+        assert result["broken_links"] == []
+
     def test_retrack_with_explicit_parent_overrides_history_link(self):
         """#742 — re-tracking an entity with an explicit parent_entity_id must
         honor the new value, not silently replace it with an auto-generated
@@ -637,10 +661,58 @@ class TestProvenanceManager:
             # and the old assertion was encoding the bug this issue was filed to fix.
             assert entry is None
 
+    def test_track_relationship_storage_error_swallowed_sqlite(self, tmp_path):
+        """Test that track_relationship returns None when storage.store() fails
+        on the SQLite backend, mirroring the InMemory contract verified by
+        test_track_relationship_storage_error_swallowed (#783/#785)."""
+        db_path = str(tmp_path / "test_track_relationship_sqlite.db")
+        prov_mgr = ProvenanceManager(storage_path=db_path)
+        with patch.object(prov_mgr.storage, "store", side_effect=RuntimeError("storage error")):
+            entry = prov_mgr.track_relationship("r_test", source="doc_1")
+            # Returning None is correct because nothing was actually persisted,
+            # and the old assertion was encoding the bug this issue was filed to fix.
+            assert entry is None
+
+    def test_track_chunk_storage_error_swallowed_sqlite(self, tmp_path):
+        """Test that track_chunk returns None when storage.store() fails
+        on the SQLite backend, mirroring the InMemory contract verified by
+        test_track_chunk_storage_error_swallowed (#783/#785)."""
+        db_path = str(tmp_path / "test_track_chunk_sqlite.db")
+        prov_mgr = ProvenanceManager(storage_path=db_path)
+        with patch.object(prov_mgr.storage, "store", side_effect=RuntimeError("storage error")):
+            entry = prov_mgr.track_chunk(
+                chunk_id="c_test",
+                source_document="doc_1",
+                source_path="/path/to/doc.pdf",
+                start_index=0,
+                end_index=100,
+            )
+            # Returning None is correct because nothing was actually persisted,
+            # and the old assertion was encoding the bug this issue was filed to fix.
+            assert entry is None
+
     def test_track_property_source_storage_error_swallowed(self):
         """Test that track_property_source returns None when storage.store() fails,
         since nothing was persisted (#783)."""
         prov_mgr = ProvenanceManager()
+        source = SourceReference(document="doc_1", page=1, confidence=0.9)
+        with patch.object(prov_mgr.storage, "store", side_effect=RuntimeError("storage error")):
+            entry = prov_mgr.track_property_source(
+                entity_id="e_test",
+                property_name="prop_test",
+                value="val",
+                source=source,
+            )
+            # Returning None is correct because nothing was actually persisted,
+            # and the old assertion was encoding the bug this issue was filed to fix.
+            assert entry is None
+
+    def test_track_property_source_storage_error_swallowed_sqlite(self, tmp_path):
+        """Test that track_property_source returns None when storage.store() fails
+        on the SQLite backend, mirroring the InMemory contract verified by
+        test_track_property_source_storage_error_swallowed (#783/#785)."""
+        db_path = str(tmp_path / "test_track_property_source_sqlite.db")
+        prov_mgr = ProvenanceManager(storage_path=db_path)
         source = SourceReference(document="doc_1", page=1, confidence=0.9)
         with patch.object(prov_mgr.storage, "store", side_effect=RuntimeError("storage error")):
             entry = prov_mgr.track_property_source(
@@ -689,6 +761,57 @@ class TestProvenanceManager:
             count = prov_mgr.track_entities_batch(entities, "doc_1")
             assert count == 0
             assert mock_log_error.call_count == 2
+
+    def test_chunks_batch_logs_per_item_failure_memory(self):
+        """Test that track_chunks_batch emits item-level logs via _save_entry when items fail,
+        mirroring test_track_entities_batch_logs_per_item_failure for the chunk path (#783/#785)."""
+        prov_mgr = ProvenanceManager()
+        chunks = [
+            {"id": "chk_fail_1", "start_index": 0, "end_index": 10},
+            {"id": "chk_fail_2", "start_index": 0, "end_index": 10},
+        ]
+        with patch.object(prov_mgr.storage, "_store_with_conn", side_effect=RuntimeError("batch store error")), \
+             patch.object(prov_mgr.logger, "error") as mock_log_error:
+            count = prov_mgr.track_chunks_batch(chunks, source_document="doc_1")
+            assert count == 0
+            assert mock_log_error.call_count == 2
+
+    def test_track_chunks_batch_block_level_transaction_failure_logs(self, tmp_path):
+        """Test that track_chunks_batch logs the block-level failure message when the
+        shared transaction itself fails to commit, mirroring the entities-batch coverage
+        established by test_batch_rollback_does_not_count_unpersisted_entries (#807/#785)."""
+        from contextlib import contextmanager
+        import sqlite3
+
+        db_path = str(tmp_path / "test_chunks_block_level_failure.db")
+        prov_mgr = ProvenanceManager(storage_path=db_path)
+        chunks = [{"id": f"chk_{i}", "start_index": 0, "end_index": 10} for i in range(5)]
+
+        # Capture the unpatched bound method first: once `transaction` is patched below,
+        # `prov_mgr.storage.transaction` would resolve to the mock itself, and calling it
+        # from inside failing_tx() would recurse into the mock instead of the real
+        # implementation (RecursionError, not the intended sqlite3.OperationalError).
+        orig_transaction = prov_mgr.storage.transaction
+
+        @contextmanager
+        def failing_tx():
+            with orig_transaction() as conn:
+                yield conn
+                raise sqlite3.OperationalError("Commit failed")
+
+        with patch.object(prov_mgr.storage, "transaction", side_effect=failing_tx), \
+             patch.object(prov_mgr.logger, "error") as mock_log_error:
+            count = prov_mgr.track_chunks_batch(chunks, source_document="doc_1")
+            assert count == 0
+            mock_log_error.assert_called_once()
+            assert "Block-level storage transaction failed in track_chunks_batch" in mock_log_error.call_args[0][0]
+            # Confirm the logged exception is the injected commit failure, not some
+            # other failure mode (e.g. a mocking mistake re-entering the patched mock).
+            logged_exc = mock_log_error.call_args[0][1]
+            assert isinstance(logged_exc, sqlite3.OperationalError)
+            assert str(logged_exc) == "Commit failed"
+
+        assert len(prov_mgr.storage.retrieve_all()) == 0
 
     def test_track_entity_pre_build_failure_fallback_skips_store(self):
         """Test that when track_entity fails before the entry is built (e.g. a
@@ -913,5 +1036,639 @@ class TestProvenanceManager:
             assert kwargs.get("exc_info") is True
 
 
+class TestAgentTyping:
+    """Issue #825, Part A item 3 — agent_id/agent_type/is_automated actually
+    populate on tracked entries (previously a dead field: no track_* method
+    read agent_id from kwargs at all)."""
+
+    def test_track_entity_scalar_agent_kwargs(self):
+        prov_mgr = ProvenanceManager()
+        entry = prov_mgr.track_entity(
+            "e1", source="doc1",
+            agent_id="alice", agent_type="person", is_automated=False, role="approver",
+        )
+        assert entry.agent_id == "alice"
+        assert entry.agent_type == "person"
+        assert entry.is_automated is False
+        assert entry.role == "approver"
+
+    def test_track_entity_agent_record_kwarg(self):
+        from semantica.provenance import AgentRecord
+        prov_mgr = ProvenanceManager()
+        agent = AgentRecord(id="reviewer_bob", agent_type="person", is_automated=False)
+        entry = prov_mgr.track_entity("e1", source="doc1", agent=agent, role="approver")
+        assert entry.agent_id == "reviewer_bob"
+        assert entry.agent_type == "person"
+        assert entry.is_automated is False
+        assert entry.role == "approver"
+
+    def test_track_entity_default_agent_unchanged(self):
+        """No agent kwargs supplied should still default to 'semantica' (back-compat)."""
+        prov_mgr = ProvenanceManager()
+        entry = prov_mgr.track_entity("e1", source="doc1")
+        assert entry.agent_id == "semantica"
+        assert entry.agent_type == "software_agent"
+        assert entry.is_automated is True
+
+    def test_track_relationship_agent_kwargs(self):
+        prov_mgr = ProvenanceManager()
+        entry = prov_mgr.track_relationship("r1", source="doc1", agent_id="bot1")
+        assert entry.agent_id == "bot1"
+
+    def test_track_chunk_agent_kwargs_not_leaked_into_metadata(self):
+        """agent_id/agent_type/is_automated passed to track_chunk must populate
+        the real fields, not leak into the opaque metadata blob."""
+        prov_mgr = ProvenanceManager()
+        entry = prov_mgr.track_chunk(
+            "c1", source_document="doc1", agent_id="chunker_v2", note="hello"
+        )
+        assert entry.agent_id == "chunker_v2"
+        assert "agent_id" not in entry.metadata
+        assert entry.metadata.get("note") == "hello"
+
+    def test_track_property_source_agent_kwargs(self):
+        prov_mgr = ProvenanceManager()
+        source = SourceReference(document="doc1")
+        entry = prov_mgr.track_property_source(
+            "e1", "prop", "value", source, agent_id="prop_tracker"
+        )
+        assert entry.agent_id == "prop_tracker"
+        assert "agent_id" not in entry.metadata
+
+    def test_track_entities_batch_agent_id_not_swallowed_into_metadata(self):
+        """Regression test for the documented bug: track_entities_batch used to
+        merge agent_id/entity_type/activity_id into the metadata dict instead
+        of forwarding them as real track_entity kwargs."""
+        prov_mgr = ProvenanceManager()
+        count = prov_mgr.track_entities_batch(
+            [{"id": "b1"}, {"id": "b2"}],
+            source="doc_batch",
+            agent_id="batch_service_v2",
+            entity_type="credit_feature",
+            activity_id="bureau_parsing",
+            extra_note="kept as free-form metadata",
+        )
+        assert count == 2
+        for eid in ("b1", "b2"):
+            entry = prov_mgr.storage.retrieve(eid)
+            assert entry.agent_id == "batch_service_v2"
+            assert entry.entity_type == "credit_feature"
+            assert entry.activity_id == "bureau_parsing"
+            assert "agent_id" not in entry.metadata
+            assert entry.metadata.get("extra_note") == "kept as free-form metadata"
+
+
+class TestVersioningVsDerivation:
+    """Issue #825, Part A item 4 — previous_version_id (correction) is
+    additive alongside derived_from_id (cross-source derivation); both are
+    populated without disturbing the legacy parent_entity_id field."""
+
+    def test_retrack_without_parent_sets_previous_version_id_only(self):
+        prov_mgr = ProvenanceManager()
+        prov_mgr.track_entity("X", source="doc_1")
+        v2 = prov_mgr.track_entity("X", source="doc_1")
+
+        assert v2.previous_version_id is not None
+        assert v2.previous_version_id.startswith("X:v:")
+        assert v2.derived_from_id is None
+        # Legacy field behavior is unchanged
+        assert v2.parent_entity_id == v2.previous_version_id
+
+    def test_retrack_with_explicit_parent_sets_both_fields(self):
+        prov_mgr = ProvenanceManager()
+        prov_mgr.track_entity("X", source="doc_1")
+        v2 = prov_mgr.track_entity("X", source="doc_1", parent_entity_id="explicit_parent")
+
+        assert v2.derived_from_id == "explicit_parent"
+        assert v2.previous_version_id is not None
+        assert v2.previous_version_id.startswith("X:v:")
+        # Legacy field keeps explicit-wins semantics
+        assert v2.parent_entity_id == "explicit_parent"
+
+    def test_track_chunk_split_sets_derived_from_id(self):
+        prov_mgr = ProvenanceManager()
+        entry = prov_mgr.track_chunk(
+            "c2", source_document="doc1", parent_chunk_id="c1"
+        )
+        assert entry.derived_from_id == "c1"
+        assert entry.previous_version_id is None
+        assert entry.parent_entity_id == "c1"
+
+
+class TestInvalidation:
+    """Issue #825, Part A item 1 — tombstone instead of hard delete."""
+
+    def test_invalidate_marks_entry_without_deleting(self):
+        prov_mgr = ProvenanceManager()
+        prov_mgr.track_entity("e1", source="doc1")
+
+        result = prov_mgr.invalidate("e1", agent_id="reviewer_jane", reason="retracted")
+
+        assert result.invalidated is True
+        assert result.invalidated_by == "reviewer_jane"
+        assert result.invalidation_reason == "retracted"
+        assert result.invalidated_at_time is not None
+
+        # Entry remains visible via retrieve (tombstone, not delete)
+        stored = prov_mgr.storage.retrieve("e1")
+        assert stored is not None
+        assert stored.invalidated is True
+
+    def test_invalidate_unknown_entity_raises(self):
+        prov_mgr = ProvenanceManager()
+        with pytest.raises(ValueError):
+            prov_mgr.invalidate("never_tracked", agent_id="reviewer_jane")
+
+    def test_check_reports_invalidated_count(self):
+        prov_mgr = ProvenanceManager()
+        prov_mgr.track_entity("e1", source="doc1")
+        prov_mgr.track_entity("e2", source="doc1")
+        prov_mgr.invalidate("e1", agent_id="reviewer_jane")
+
+        result = prov_mgr.check()
+        assert result["invalidated_count"] == 1
+
+
+class TestHashChain:
+    """Issue #825, Part A item 2 — hash-chained integrity: chained checksums
+    detect wholesale row deletion, which per-row checksums alone cannot."""
+
+    def test_verify_chain_valid_on_clean_history(self):
+        prov_mgr = ProvenanceManager()
+        prov_mgr.track_entity("e1", source="doc1")
+        prov_mgr.track_entity("e2", source="doc1")
+        prov_mgr.track_entity("X", source="doc1")
+        prov_mgr.track_entity("X", source="doc1")  # triggers archival
+        prov_mgr.track_entity("X", source="doc1", parent_entity_id="explicit_p")
+
+        result = prov_mgr.verify_chain()
+        assert result["valid"] is True
+        assert result["broken_links"] == []
+        assert result["total_entries"] == 5
+
+    def test_verify_chain_detects_deleted_row(self, tmp_path):
+        """A hard delete of a row must break the chain for whatever followed it."""
+        import sqlite3
+        db_path = str(tmp_path / "chain.db")
+        prov_mgr = ProvenanceManager(storage_path=db_path)
+        prov_mgr.track_entity("e1", source="doc1")
+        prov_mgr.track_entity("e2", source="doc1")
+        prov_mgr.track_entity("e3", source="doc1")
+
+        conn = sqlite3.connect(db_path)
+        conn.execute("DELETE FROM provenance WHERE entity_id = 'e2'")
+        conn.commit()
+        conn.close()
+
+        prov_mgr2 = ProvenanceManager(storage_path=db_path)
+        result = prov_mgr2.verify_chain()
+        assert result["valid"] is False
+        assert any(link["reason"] == "chain_break" for link in result["broken_links"])
+
+    def test_verify_chain_detects_tampered_sequence_gap(self, tmp_path):
+        """The sequence_id continuity check catches a gap introduced by
+        directly tampering with a row's sequence_id column, independent of
+        the previous_checksum comparison — hardening against the narrow case
+        where compute_checksum()'s deliberate exclusion of entity_id could
+        otherwise let two distinct rows coincidentally share a checksum."""
+        import sqlite3
+        db_path = str(tmp_path / "chain_seq_gap.db")
+        prov_mgr = ProvenanceManager(storage_path=db_path)
+        prov_mgr.track_entity("e1", source="doc1")
+        prov_mgr.track_entity("e2", source="doc1")
+        prov_mgr.track_entity("e3", source="doc1")
+
+        conn = sqlite3.connect(db_path)
+        conn.execute("UPDATE provenance SET sequence_id = 10 WHERE entity_id = 'e3'")
+        conn.commit()
+        conn.close()
+
+        prov_mgr2 = ProvenanceManager(storage_path=db_path)
+        result = prov_mgr2.verify_chain()
+        assert result["valid"] is False
+        broken = [link for link in result["broken_links"] if link["entity_id"] == "e3"]
+        assert broken
+        assert broken[0]["expected_sequence_id"] == 3
+
+    def test_sequence_ids_are_assigned_and_monotonic(self):
+        prov_mgr = ProvenanceManager()
+        e1 = prov_mgr.track_entity("e1", source="doc1")
+        e2 = prov_mgr.track_entity("e2", source="doc1")
+        assert e1.sequence_id is not None
+        assert e2.sequence_id is not None
+        assert e2.sequence_id > e1.sequence_id
+        assert e2.previous_checksum == e1.checksum
+
+    def test_chain_survives_interleaved_retrack_and_invalidate(self, tmp_path):
+        """Regression test: an entry that already chained its previous_checksum
+        from another entity's checksum (Y -> X) must stay valid even after X
+        is later retracked (archived/relabeled) and then invalidated — both
+        of which write NEW entries under X's canonical key. Mutating X's
+        existing row in place (rather than archiving-then-appending) used to
+        silently orphan Y's chain link, producing a false-positive break."""
+        db_path = str(tmp_path / "interleaved.db")
+        prov_mgr = ProvenanceManager(storage_path=db_path)
+
+        prov_mgr.track_entity("e1", source="doc1")
+        prov_mgr.track_entity("X", source="doc1")
+        prov_mgr.track_entity("Y", source="doc1", parent_entity_id="X")
+        prov_mgr.track_entity("X", source="doc1")  # retrack: archives old X
+        prov_mgr.track_entity("Z", source="doc1", parent_entity_id="X")
+        prov_mgr.invalidate("X", agent_id="reviewer")  # archives again
+        prov_mgr.track_entity("W", source="doc1", parent_entity_id="X")
+
+        result = prov_mgr.verify_chain()
+        assert result["valid"] is True
+        assert result["broken_links"] == []
+
+    def test_invalidate_does_not_break_chain(self):
+        prov_mgr = ProvenanceManager()
+        prov_mgr.track_entity("e1", source="doc1")
+        prov_mgr.track_entity("e2", source="doc1", parent_entity_id="e1")
+        prov_mgr.invalidate("e1", agent_id="reviewer_jane")
+
+        result = prov_mgr.verify_chain()
+        assert result["valid"] is True
+
+
+class TestDownstreamLineage:
+    """Issue #825, Part A item 5 — downstream/descendant traversal (reverse
+    BFS), complementing the existing upstream-only trace_lineage/get_lineage."""
+
+    def test_get_descendants_finds_direct_child(self):
+        prov_mgr = ProvenanceManager()
+        prov_mgr.track_entity("parent1", source="doc1")
+        prov_mgr.track_entity(
+            "child1", source="doc1", parent_entity_id="parent1", used_entities=["parent1"]
+        )
+
+        result = prov_mgr.get_descendants("parent1")
+        entity_ids = {e["entity_id"] for e in result["entries"]}
+        assert "child1" in entity_ids
+
+    def test_get_descendants_transitive(self):
+        prov_mgr = ProvenanceManager()
+        prov_mgr.track_entity("a", source="doc1")
+        prov_mgr.track_entity("b", source="doc1", parent_entity_id="a")
+        prov_mgr.track_entity("c", source="doc1", parent_entity_id="b")
+
+        result = prov_mgr.get_descendants("a")
+        entity_ids = {e["entity_id"] for e in result["entries"]}
+        assert entity_ids == {"b", "c"}
+
+    def test_get_descendants_empty_for_leaf(self):
+        prov_mgr = ProvenanceManager()
+        prov_mgr.track_entity("leaf", source="doc1")
+        assert prov_mgr.get_descendants("leaf") == {}
+
+    def test_descendants_work_on_sqlite_backend(self, tmp_path):
+        db_path = str(tmp_path / "desc.db")
+        prov_mgr = ProvenanceManager(storage_path=db_path)
+        prov_mgr.track_entity("parent1", source="doc1")
+        prov_mgr.track_entity("child1", source="doc1", parent_entity_id="parent1")
+
+        result = prov_mgr.get_descendants("parent1")
+        entity_ids = {e["entity_id"] for e in result["entries"]}
+        assert "child1" in entity_ids
+
+
+class TestQualifiedExport:
+    """Issue #825, Part A item 6 — qualified Association with hadRole, plus
+    qualified Invalidation, in the RDF export."""
+
+    def test_export_prov_includes_qualified_association_and_role(self):
+        prov_mgr = ProvenanceManager()
+        prov_mgr.track_entity(
+            "e1", source="doc1", agent_id="alice", agent_type="person", role="approver"
+        )
+        ttl = prov_mgr.export_prov(format="turtle")
+        assert "qualifiedAssociation" in ttl
+        assert "hadRole" in ttl
+        assert "role_approver" in ttl
+        assert "Person" in ttl
+
+    def test_export_prov_includes_qualified_invalidation(self):
+        prov_mgr = ProvenanceManager()
+        prov_mgr.track_entity("e1", source="doc1")
+        prov_mgr.invalidate("e1", agent_id="reviewer_jane", reason="retracted")
+
+        ttl = prov_mgr.export_prov(format="turtle")
+        assert "qualifiedInvalidation" in ttl
+        assert "Invalidation" in ttl
+
+
+class TestTypedActivity:
+    """Issue #825, Part B Tier 1 — typed Activity via ActivityRecord."""
+
+    def test_track_entity_activity_record_kwarg(self):
+        from semantica.provenance import ActivityRecord
+        prov_mgr = ProvenanceManager()
+        activity = ActivityRecord(
+            id="bureau_parsing_run_42",
+            started_at_time="2026-01-01T00:00:00",
+            ended_at_time="2026-01-01T00:00:03",
+        )
+        entry = prov_mgr.track_entity("e1", source="doc1", activity=activity)
+        assert entry.activity_id == "bureau_parsing_run_42"
+        assert entry.activity_started_at_time == "2026-01-01T00:00:00"
+        assert entry.activity_ended_at_time == "2026-01-01T00:00:03"
+
+    def test_track_entity_activity_scalar_kwargs(self):
+        prov_mgr = ProvenanceManager()
+        entry = prov_mgr.track_entity(
+            "e1", source="doc1",
+            activity_id="parse_step", activity_started_at_time="t0", activity_ended_at_time="t1",
+        )
+        assert entry.activity_id == "parse_step"
+        assert entry.activity_started_at_time == "t0"
+        assert entry.activity_ended_at_time == "t1"
+
+    def test_export_prov_qualified_generation_usage_derivation(self):
+        prov_mgr = ProvenanceManager()
+        prov_mgr.track_entity("parent1", source="doc1")
+        prov_mgr.track_entity(
+            "child1", source="doc1",
+            parent_entity_id="parent1", used_entities=["parent1"],
+            activity_id="transform",
+        )
+        ttl = prov_mgr.export_prov(format="turtle")
+        assert "qualifiedGeneration" in ttl
+        assert "Generation" in ttl
+        assert "qualifiedUsage" in ttl
+        assert "Usage" in ttl
+        assert "qualifiedDerivation" in ttl
+        assert "Derivation" in ttl
+
+    def test_export_prov_activity_timing(self):
+        from semantica.provenance import ActivityRecord
+        prov_mgr = ProvenanceManager()
+        prov_mgr.track_entity(
+            "e1", source="doc1",
+            activity=ActivityRecord(id="act1", started_at_time="2026-01-01T00:00:00",
+                                     ended_at_time="2026-01-01T00:00:05"),
+        )
+        ttl = prov_mgr.export_prov(format="turtle")
+        assert "startedAtTime" in ttl
+        assert "endedAtTime" in ttl
+
+
+class TestAssociationDelegationChaining:
+    """Issue #825, Part B Tier 2 — wasAssociatedWith, actedOnBehalfOf, wasInformedBy."""
+
+    def test_acted_on_behalf_of(self):
+        prov_mgr = ProvenanceManager()
+        entry = prov_mgr.track_entity(
+            "e1", source="doc1", agent_id="bot1", acted_on_behalf_of="org1"
+        )
+        assert entry.acted_on_behalf_of == "org1"
+        ttl = prov_mgr.export_prov(format="turtle")
+        assert "actedOnBehalfOf" in ttl
+
+    def test_informed_by_activities(self):
+        prov_mgr = ProvenanceManager()
+        entry = prov_mgr.track_entity(
+            "e1", source="doc1", activity_id="parse", informed_by=["ingest_activity"]
+        )
+        assert entry.informed_by_activities == ["ingest_activity"]
+        ttl = prov_mgr.export_prov(format="turtle")
+        assert "wasInformedBy" in ttl
+
+    def test_was_associated_with_in_export(self):
+        prov_mgr = ProvenanceManager()
+        prov_mgr.track_entity("e1", source="doc1", agent_id="alice", activity_id="act1")
+        ttl = prov_mgr.export_prov(format="turtle")
+        assert "wasAssociatedWith" in ttl
+
+    def test_track_entities_batch_forwards_tier2_kwargs(self):
+        """Regression test for the batch-kwargs-vs-metadata bug (issue #825,
+        Part A) extended to the new Tier 2/3 keys."""
+        prov_mgr = ProvenanceManager()
+        count = prov_mgr.track_entities_batch(
+            [{"id": "b1"}],
+            source="doc_batch",
+            activity_id="bureau_parsing",
+            acted_on_behalf_of="org1",
+            informed_by=["ingest_activity"],
+            bundle_id="run_1",
+        )
+        assert count == 1
+        entry = prov_mgr.storage.retrieve("b1")
+        assert entry.activity_id == "bureau_parsing"
+        assert entry.acted_on_behalf_of == "org1"
+        assert entry.informed_by_activities == ["ingest_activity"]
+        assert entry.bundle_id == "run_1"
+        assert "acted_on_behalf_of" not in entry.metadata
+
+
+class TestBitemporalMerge:
+    """Issue #825, Part B Tier 3 — revision_history()/query_recorded_between()
+    close kg.ProvenanceTracker's documented 'no direct equivalent yet' gaps."""
+
+    def test_revision_history_ascending_with_valid_until(self):
+        prov_mgr = ProvenanceManager()
+        prov_mgr.track_entity("X", source="doc1", agent_id="alice")
+        prov_mgr.track_entity("X", source="doc1", agent_id="bob", revision_type="correction")
+        prov_mgr.track_entity("X", source="doc1", agent_id="carol", supersedes="X_old_claim")
+
+        history = prov_mgr.revision_history("X")
+        assert len(history) == 3
+        assert [h["version"] for h in history] == [1, 2, 3]
+        assert history[0]["author"] == "alice"
+        assert history[1]["author"] == "bob"
+        assert history[1]["revision_type"] == "correction"
+        assert history[2]["author"] == "carol"
+        assert history[2]["supersedes"] == "X_old_claim"
+        # Every version except the last has a valid_until set to the next version's timestamp
+        assert history[0]["valid_until"] == history[1]["valid_from"]
+        assert history[1]["valid_until"] == history[2]["valid_from"]
+        assert history[2]["valid_until"] is None
+
+    def test_revision_history_empty_for_untracked_entity(self):
+        prov_mgr = ProvenanceManager()
+        assert prov_mgr.revision_history("never_tracked") == []
+
+    def test_revision_history_single_version(self):
+        prov_mgr = ProvenanceManager()
+        prov_mgr.track_entity("Y", source="doc1")
+        history = prov_mgr.revision_history("Y")
+        assert len(history) == 1
+        assert history[0]["version"] == 1
+        assert history[0]["valid_until"] is None
+
+    def test_query_recorded_between(self):
+        prov_mgr = ProvenanceManager()
+        prov_mgr.track_entity("e1", source="doc1")
+        prov_mgr.track_entity("e2", source="doc1")
+
+        results = prov_mgr.query_recorded_between("2000-01-01T00:00:00", "2100-01-01T00:00:00")
+        entity_ids = {r["entity_id"] for r in results}
+        assert {"e1", "e2"}.issubset(entity_ids)
+
+        no_results = prov_mgr.query_recorded_between("1990-01-01T00:00:00", "1990-01-02T00:00:00")
+        assert no_results == []
+
+    def test_check_flags_missing_informed_by_activity(self):
+        prov_mgr = ProvenanceManager()
+        prov_mgr.track_entity("e1", source="doc1", informed_by=["never_tracked_activity"])
+        result = prov_mgr.check()
+        assert result["valid"] is False
+        assert any("never_tracked_activity" in ref for ref in result["missing_references"])
+
+
+class TestBundleAndBaseUri:
+    """Issue #825, Part B Tier 3 — prov:Bundle membership and configurable base_uri."""
+
+    def test_bundle_id_produces_bundle_triples(self):
+        prov_mgr = ProvenanceManager()
+        prov_mgr.track_entity("e1", source="doc1", bundle_id="ingestion_run_1")
+        ttl = prov_mgr.export_prov(format="turtle")
+        assert "Bundle" in ttl
+        assert "hadMember" in ttl
+
+    def test_default_base_uri_matches_rdf_exporter_namespace(self):
+        from semantica.provenance.manager import DEFAULT_BASE_URI
+        from semantica.export.rdf_exporter import NamespaceManager
+        assert NamespaceManager().namespaces["semantica"] == DEFAULT_BASE_URI
+
+    def test_export_prov_base_uri_override(self):
+        prov_mgr = ProvenanceManager()
+        prov_mgr.track_entity("e1", source="doc1")
+
+        default_ttl = prov_mgr.export_prov(format="turtle")
+        assert "https://semantica.dev/ns#" in default_ttl
+
+        custom_ttl = prov_mgr.export_prov(format="turtle", base_uri="https://example.org/kg#")
+        assert "https://example.org/kg#" in custom_ttl
+        assert "https://semantica.dev/ns#" not in custom_ttl
+
+    def test_owl_exporter_default_ontology_uri_matches_shared_namespace(self):
+        """Issue #825 follow-up — OWLExporter was the one exporter left out of
+        the Part B Tier 3 namespace interlinking; its default ontology_uri
+        must match the same shared DEFAULT_BASE_URI as RDFExporter and
+        export_prov()."""
+        from semantica.provenance.manager import DEFAULT_BASE_URI
+        from semantica.export.owl_exporter import OWLExporter
+        assert OWLExporter().ontology_uri == DEFAULT_BASE_URI
+
+
+class TestExplicitBitemporalFields:
+    """Issue #825 follow-up — valid_from/valid_until as explicit,
+    caller-supplied ProvenanceEntry fields (matching the deprecated
+    kg.ProvenanceTracker's actual contract: these were always caller-supplied
+    metadata keys, never auto-computed)."""
+
+    def test_valid_from_valid_until_are_plain_passthrough_fields(self):
+        prov_mgr = ProvenanceManager()
+        entry = prov_mgr.track_entity(
+            "price1", source="doc1", valid_from="2026-01-01", valid_until="2026-06-01"
+        )
+        assert entry.valid_from == "2026-01-01"
+        assert entry.valid_until == "2026-06-01"
+
+    def test_revision_history_prefers_explicit_valid_from_until(self):
+        prov_mgr = ProvenanceManager()
+        prov_mgr.track_entity(
+            "price1", source="doc1", valid_from="2026-01-01", valid_until="2026-06-01"
+        )
+        history = prov_mgr.revision_history("price1")
+        assert history[0]["valid_from"] == "2026-01-01"
+        assert history[0]["valid_until"] == "2026-06-01"
+
+    def test_revision_history_falls_back_to_timestamp_when_unset(self):
+        """Backward-compat: entries that don't set valid_from/valid_until
+        explicitly still get the dynamic timestamp-based derivation."""
+        prov_mgr = ProvenanceManager()
+        prov_mgr.track_entity("X", source="doc1")
+        prov_mgr.track_entity("X", source="doc1")
+        history = prov_mgr.revision_history("X")
+        assert history[0]["valid_until"] == history[1]["valid_from"]
+        assert history[1]["valid_until"] is None
+
+    def test_valid_from_until_survive_sqlite_round_trip(self, tmp_path):
+        db_path = str(tmp_path / "bitemporal.db")
+        prov_mgr = ProvenanceManager(storage_path=db_path)
+        prov_mgr.track_entity(
+            "price1", source="doc1", valid_from="2026-01-01", valid_until="2026-06-01"
+        )
+        prov_mgr2 = ProvenanceManager(storage_path=db_path)
+        entry = prov_mgr2.storage.retrieve("price1")
+        assert entry.valid_from == "2026-01-01"
+        assert entry.valid_until == "2026-06-01"
+
+
+class TestActivityTimingAcrossWrappers:
+    """Issue #825 follow-up — activity_started_at_time/ended_at_time wired
+    into all *_provenance.py wrapper modules that measure real work, not
+    just the 2 wrappers from the original Part B pass."""
+
+    def test_embedding_wrapper_records_activity_timing(self):
+        from semantica.embeddings.embeddings_provenance import EmbeddingGeneratorWithProvenance
+        wrapper = EmbeddingGeneratorWithProvenance(provenance=True, agent_id="embed_svc")
+        wrapper._generator.embed = lambda texts, **kw: [[0.1, 0.2] for _ in texts]
+        wrapper.embed(["hello", "world"])
+        entries = wrapper._prov_manager.storage.retrieve_all()
+        assert len(entries) == 1
+        assert entries[0].activity_started_at_time is not None
+        assert entries[0].activity_ended_at_time is not None
+
+    def test_kg_algorithm_tracker_accepts_caller_supplied_activity_timing(self):
+        from semantica.kg.kg_provenance import AlgorithmTrackerWithProvenance
+        tracker = AlgorithmTrackerWithProvenance(provenance=True, agent_id="algo_svc")
+        eid = tracker.track_embedding_computation(
+            graph=object(), algorithm="node2vec", embeddings={"n1": [0.1, 0.2]},
+            parameters={"d": 2},
+            activity_started_at_time="t0", activity_ended_at_time="t1",
+        )
+        entry = tracker._prov_manager.get_provenance(eid)
+        assert entry["activity_started_at_time"] == "t0"
+        assert entry["activity_ended_at_time"] == "t1"
+
+    def test_graph_builder_build_operation_has_no_end_time_yet(self):
+        """The build-operation marker is recorded before the build runs, so
+        it legitimately has a start but no end time."""
+        from semantica.kg.kg_provenance import GraphBuilderWithProvenance
+        builder = GraphBuilderWithProvenance(provenance=True, agent_id="builder_svc")
+        builder._builder.build_single_source = lambda kg_data, **kw: {"entities": [], "relationships": []}
+        builder.build_single_source({"foo": "bar"})
+        entries = builder._prov_manager.storage.retrieve_all()
+        # NOTE: entity_type isn't asserted here — kg_provenance.py has a
+        # pre-existing, out-of-scope bug where entity_type is nested inside
+        # the metadata dict instead of passed as a track_entity kwarg, so it
+        # never actually populates the real field for this call site.
+        build_entries = [e for e in entries if e.entity_id.startswith("graph_build_single_")]
+        assert len(build_entries) == 1
+        assert build_entries[0].activity_started_at_time is not None
+        assert build_entries[0].activity_ended_at_time is None
+
+    def test_semantic_extract_wrapper_records_activity_timing(self):
+        from semantica.semantic_extract.semantic_extract_provenance import ProvenanceMixin
+
+        class FakeExtractor(ProvenanceMixin):
+            pass
+
+        wrapper = FakeExtractor(provenance=True, agent_id="extract_svc")
+        wrapper._track_extraction(
+            entity_id="e1", source="doc1", entity_type="named_entity",
+            activity_started_at_time="t0", activity_ended_at_time="t1",
+        )
+        entry = wrapper._prov_manager.get_provenance("e1")
+        assert entry["activity_started_at_time"] == "t0"
+        assert entry["activity_ended_at_time"] == "t1"
+        assert "activity_started_at_time" not in entry["metadata"]
+
+    def test_conflicts_wrapper_records_activity_timing(self):
+        from semantica.conflicts.conflicts_provenance import SourceTrackerWithUnifiedBackend
+
+        class FakeSource:
+            document = "doc1"
+            page = 1
+            section = None
+            confidence = 0.9
+
+        tracker = SourceTrackerWithUnifiedBackend(agent_id="conflicts_svc")
+        tracker.track_property_source("e1", "prop", "val", FakeSource())
+        entry = tracker._unified_manager.get_provenance("e1_prop")
+        assert entry["activity_started_at_time"] is not None
+        assert entry["activity_ended_at_time"] is not None
 
 

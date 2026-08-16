@@ -17,8 +17,8 @@ Every method on `kg.ProvenanceTracker` now emits a `DeprecationWarning` on use, 
 | `track_entity(entity_id, source, metadata)` | `track_entity(entity_id, source, metadata)` | Same call shape. `ProvenanceManager` additionally auto-links each update to its prior version via `parent_entity_id`. |
 | `get_all_sources(entity_id)` | `get_all_sources(entity_id)` | Field name differs: the `kg` tracker returns each record's time under `"recorded_at"`; `ProvenanceManager` returns `"timestamp"`. |
 | `clear(entity_id=None)` | `clear()` | `ProvenanceManager.clear()` clears all provenance data; there is no per-entity clear yet. |
-| `query_recorded_between(start, end)` | *No direct equivalent yet* | Filter the entries returned by `get_lineage()` / `trace_lineage()` client-side in the meantime. |
-| `revision_history(fact_id)` | *No direct equivalent yet* | `get_lineage(fact_id)["lineage_chain"]` returns the full chain of `ProvenanceEntry` records but not in the same versioned shape. |
+| `query_recorded_between(start, end)` | `query_recorded_between(start, end)` | Same call shape; filters by `timestamp` (ISO 8601 string comparison) across all tracked entries, not just one entity. |
+| `revision_history(fact_id)` | `revision_history(fact_id)` | Same call shape and return shape (`version`, `valid_from`, `valid_until`, `recorded_at`, `author`, optional `revision_type`/`supersedes`) — walks the entity's `previous_version_id` chain rather than a flat per-entity dict. |
 | `export_audit_log(fact_ids, format)` | *No direct equivalent yet* | Build the export from `get_lineage()` output, or serialize `get_statistics()` for a summary view. |
 
 Methods with no direct equivalent are not planned to be reimplemented on `kg.ProvenanceTracker` — they will need a small adapter in caller code, or a feature request against `ProvenanceManager` if you rely on them heavily.

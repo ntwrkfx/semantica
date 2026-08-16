@@ -177,14 +177,12 @@ class WeaviateQuery:
                 results.append(
                     {
                         "id": str(obj.uuid),
-                        "properties": obj.properties,
+                        "metadata": obj.properties if obj.properties is not None else {},
                         "distance": obj.metadata.distance if obj.metadata else None,
-                        "score": 1.0
-                        - (
-                            obj.metadata.distance
-                            if obj.metadata and obj.metadata.distance
-                            else 0.0
-                        ),
+                        "score": 1.0 / (1.0 + max(0.0, obj.metadata.distance))
+                        if obj.metadata and obj.metadata.distance is not None
+                        else 1.0,
+                        "vector": None,
                     }
                 )
 
@@ -417,6 +415,35 @@ class WeaviateStore:
                 tracking_id, status="failed", message=str(e)
             )
             raise ProcessingError(f"Failed to add objects: {str(e)}")
+
+    def get_vector(self, vector_id: str) -> Optional[np.ndarray]:
+        """Get vector by ID."""
+        if self.collection is None or not WEAVIATE_AVAILABLE:
+            return None
+        
+        try:
+            # Weaviate expects a valid UUID string
+            obj = self.collection.query.fetch_object_by_id(vector_id, include_vector=True)
+            if obj and obj.vector:
+                return np.array(obj.vector)
+            return None
+        except Exception as e:
+            self.logger.warning(f"Failed to get vector {vector_id}: {e}")
+            return None
+
+    def get_metadata(self, vector_id: str) -> Optional[Dict[str, Any]]:
+        """Get metadata by ID."""
+        if self.collection is None or not WEAVIATE_AVAILABLE:
+            return None
+        
+        try:
+            obj = self.collection.query.fetch_object_by_id(vector_id)
+            if obj and obj.properties:
+                return obj.properties
+            return None
+        except Exception as e:
+            self.logger.warning(f"Failed to get metadata for {vector_id}: {e}")
+            return None
 
     def query_vectors(
         self,

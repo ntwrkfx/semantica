@@ -149,7 +149,7 @@ A database optimized for storing and querying graph-structured data using node a
 A retrieval strategy combining vector similarity search with keyword or metadata filtering: higher accuracy than either approach alone.
 
 **Triplet Store**
-A database designed specifically for storing and querying RDF `(subject, predicate, object)` triples. Semantica supports Blazegraph, Apache Jena, and RDF4J.
+A database designed specifically for storing and querying RDF `(subject, predicate, object)` triples. Semantica supports embedded Oxigraph as well as Blazegraph, Apache Jena, and RDF4J.
 
 **Vector Store**
 A database optimized for storing and searching high-dimensional embedding vectors by similarity. Semantica supports FAISS, Pinecone, Weaviate, Qdrant, Milvus, and PgVector.

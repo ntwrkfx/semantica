@@ -1,3 +1,6 @@
+import json
+import shutil
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 import numpy as np
@@ -88,6 +91,94 @@ class TestVectorStore(unittest.TestCase):
         self.assertTrue(np.array_equal(store.get_vector("v1"), vec))
         self.assertEqual(store.get_metadata("v1"), meta)
         self.assertIsNone(store.get_vector("nonexistent"))
+
+    def test_store_vectors_metadata_forwarding(self):
+        """Test that metadata is correctly forwarded to backends that support it."""
+        store = VectorStore(backend="inmemory")
+        
+        class MockBackendWithMetadata:
+            def __init__(self):
+                self.received_metadata = None
+                
+            def add_vectors(self, vectors, ids=None, metadata=None, **options):
+                self.received_metadata = metadata
+                return ["vec1"]
+                
+        mock_backend = MockBackendWithMetadata()
+        store._backend_store = mock_backend
+        
+        vectors = [np.array([0.1, 0.2])]
+        metadata = [{"id": "1"}]
+        
+        store.store_vectors(vectors, metadata=metadata)
+        
+        self.assertEqual(mock_backend.received_metadata, metadata)
+
+    def test_store_vectors_strict_backend(self):
+        """Test that metadata is dropped for strict backends without TypeError."""
+        store = VectorStore(backend="inmemory")
+        
+        class MockBackendStrict:
+            def __init__(self):
+                self.called = False
+                
+            def add_vectors(self, vectors):
+                self.called = True
+                return ["vec1"]
+                
+        mock_backend = MockBackendStrict()
+        store._backend_store = mock_backend
+        
+        vectors = [np.array([0.1, 0.2])]
+        metadata = [{"id": "1"}]
+        
+        # This should not raise TypeError since metadata is dropped
+        store.store_vectors(vectors, metadata=metadata)
+        
+        self.assertTrue(mock_backend.called)
+
+    def test_save_load_roundtrip_numpy_vectors(self):
+        """save()/load() must handle numpy float32 vectors without raising.
+
+        Regression test: json.dump() rejects numpy scalar types, so a naive
+        `list(v)` conversion (which yields np.float32 elements, not native
+        floats) raises TypeError. `v.tolist()` converts recursively to
+        native Python floats and must be used instead.
+        """
+        store = VectorStore(backend="inmemory", dimension=3)
+        store.vectors = {"v1": np.array([0.1, 0.2, 0.3], dtype=np.float32)}
+        store.metadata = {"v1": {"id": "1"}}
+
+        tmpdir = tempfile.mkdtemp()
+        try:
+            store.save(tmpdir)  # must not raise TypeError
+
+            # The JSON file itself must be valid and free of numpy types.
+            with open(f"{tmpdir}/store_data.json", "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self.assertTrue(all(isinstance(x, float) for x in data["vectors"]["v1"]))
+
+            loaded = VectorStore(backend="inmemory", dimension=3)
+            loaded.load(tmpdir)
+            np.testing.assert_allclose(
+                loaded.vectors["v1"], [0.1, 0.2, 0.3], rtol=1e-6
+            )
+            self.assertEqual(loaded.metadata["v1"], {"id": "1"})
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_load_rejects_legacy_pickle(self):
+        """load() must refuse legacy .pkl stores rather than deserializing them."""
+        store = VectorStore(backend="inmemory", dimension=3)
+        tmpdir = tempfile.mkdtemp()
+        try:
+            with open(f"{tmpdir}/store_data.pkl", "wb") as f:
+                f.write(b"not a real pickle, just needs to exist")
+            with self.assertRaises(RuntimeError):
+                store.load(tmpdir)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
 
 if __name__ == '__main__':
     unittest.main()

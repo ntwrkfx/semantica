@@ -31,6 +31,12 @@ from ..utils.helpers import ensure_directory
 from ..utils.logging import get_logger
 from ..utils.progress_tracker import get_progress_tracker
 
+# Issue #825, Part B Tier 3 — exporter interlinking. Reuses the same default
+# namespace as ProvenanceManager.export_prov() and RDFExporter's
+# NamespaceManager "semantica" entry, so ontology URIs, KG instance URIs, and
+# PROV-exported URIs co-resolve under one shared namespace by default.
+from ..provenance.manager import DEFAULT_BASE_URI
+
 
 class OWLExporter:
     """
@@ -58,7 +64,7 @@ class OWLExporter:
 
     def __init__(
         self,
-        ontology_uri: str = "https://semantica.dev/ontology/",
+        ontology_uri: str = DEFAULT_BASE_URI,
         version: str = "1.0",
         format: str = "owl-xml",
         config: Optional[Dict[str, Any]] = None,
@@ -70,7 +76,8 @@ class OWLExporter:
         Sets up the exporter with ontology URI, version, and format configuration.
 
         Args:
-            ontology_uri: Base URI for the ontology (default: "https://semantica.dev/ontology/")
+            ontology_uri: Base URI for the ontology (default: ProvenanceManager.DEFAULT_BASE_URI,
+                shared with RDFExporter's NamespaceManager and export_prov() so URIs co-resolve)
             version: Ontology version string (default: "1.0")
             format: Default export format - 'owl-xml' or 'turtle' (default: 'owl-xml')
             config: Optional configuration dictionary (merged with kwargs)

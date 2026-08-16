@@ -325,6 +325,17 @@ export function GraphWorkspaceShell() {
   const [activeNodeCount, setActiveNodeCount] = useState<number | null>(null);
   const [temporalBounds, setTemporalBounds] = useState<TemporalBounds | null>(null);
   const [scrubberTime, setScrubberTime] = useState<Date | null>(null);
+  // Deduplicates setScrubberTime calls by millisecond value — same fix as
+  // GraphWorkspace.tsx (issue #830).
+  const lastScrubberMsRef = useRef<number | null>(null);
+  const onTimeChange = useCallback((time: Date) => {
+    const ms = time.getTime();
+    if (ms === lastScrubberMsRef.current) {
+      return;
+    }
+    lastScrubberMsRef.current = ms;
+    setScrubberTime(time);
+  }, []);
   const [loadingProgress, setLoadingProgress] = useState<GraphLoadProgress | null>(null);
   const [isGraphStageReady, setIsGraphStageReady] = useState(false);
   const [layoutStatus, setLayoutStatus] = useState<GraphLayoutStatus>({
@@ -632,7 +643,7 @@ export function GraphWorkspaceShell() {
 
       <Suspense fallback={<TimelineFallback min={temporalBounds?.min ?? null} max={temporalBounds?.max ?? null} />}>
         <TimelinePanel
-          onTimeChange={setScrubberTime}
+          onTimeChange={onTimeChange}
           minDate={temporalBounds?.min ?? undefined}
           maxDate={temporalBounds?.max ?? undefined}
         />

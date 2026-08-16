@@ -633,12 +633,29 @@ Every `ProvenanceEntry` maps directly to W3C PROV-O terms. If your compliance te
 | :--- | :--- | :--- |
 | `prov:Entity` | `entity_id` | The tracked object — entity, chunk, relationship, or property |
 | `prov:Activity` | `activity_id` | The process that produced it — `"ner_extraction"`, `"bureau_parsing"` |
-| `prov:Agent` | `agent_id` | Who ran the activity — pipeline name, analyst ID |
-| `prov:wasDerivedFrom` | `parent_entity_id` | The previous version of this entity — enables version chaining |
+| `prov:Agent` / `prov:Person` / `prov:SoftwareAgent` / `prov:Organization` | `agent_id`, `agent_type`, `is_automated` | Who — or what — ran the activity, and whether a human was directly accountable |
+| `prov:qualifiedAssociation` + `prov:hadRole` | `role` | The agent's role for this specific entity — `"generator"` (default), `"approver"`, `"reviewer"` — for sign-off/four-eyes workflows |
+| `prov:wasDerivedFrom` | `parent_entity_id` (legacy combined field) | The previous version or source of this entity |
+| — | `previous_version_id` | This entry corrects/replaces a prior version of the *same* fact |
+| `prov:wasDerivedFrom` | `derived_from_id` | This entry was derived from a *different* source entity |
 | `prov:used` | `used_entities` | Entity IDs consumed to produce this one |
 | `prov:generatedAtTime` | `timestamp` | ISO datetime, auto-set to `datetime.utcnow()` at write time |
+| `prov:qualifiedInvalidation` | `invalidated`, `invalidated_at_time`, `invalidated_by`, `invalidation_reason` | A retraction/correction recorded as a tombstone via `ProvenanceManager.invalidate()`, never a hard delete |
+| `prov:startedAtTime` / `prov:endedAtTime` | `activity_started_at_time`, `activity_ended_at_time` | Typed Activity timing — pass an `ActivityRecord` via the `activity=` kwarg to set these together with `activity_id` |
+| `prov:qualifiedGeneration`/`Generation`, `qualifiedUsage`/`Usage`, `qualifiedDerivation`/`Derivation` | (derived from the fields above) | Additive qualified forms of `wasGeneratedBy`/`used`/`wasDerivedFrom`, emitted automatically alongside the plain triples |
+| `prov:wasAssociatedWith` | (derived from `agent_id`) | Direct Activity→Agent link, distinct from the Entity→Agent `wasAttributedTo` |
+| `prov:actedOnBehalfOf` | `acted_on_behalf_of` | Agent→Agent delegation — e.g. an automated agent acting on behalf of the human/organization that authorized it |
+| `prov:wasInformedBy` | `informed_by_activities` (pass as `informed_by=[...]`) | Chains this entry's activity to prior activities it was informed by (e.g. a pipeline stage informed by the stage before it) |
+| `prov:Bundle` + `prov:hadMember` | `bundle_id` | Groups entries by source/dataset/ingestion-run (membership triples, not true RDF named-graph partitioning) |
+| — | `valid_from`, `valid_until`, `revision_type`, `supersedes` | Bitemporal fields merged from the deprecated `kg.ProvenanceTracker` — always caller-supplied (never auto-computed), surfaced via `ProvenanceManager.revision_history()`, which falls back to timestamp-based derivation for entries that don't set them explicitly |
 
-The `checksum` field is not part of the PROV-O standard — it is Semantica's tamper-detection extension. Every entry's SHA-256 is computed from its content fields at write time and can be recomputed at any time to verify the record has not been modified.
+`previous_version_id` and `derived_from_id` are additive alongside `parent_entity_id` — existing code reading `parent_entity_id` keeps working unchanged, while new code gets the two relations disambiguated.
+
+The `checksum` field is not part of the PROV-O standard — it is Semantica's tamper-detection extension. Every entry's SHA-256 now also incorporates `previous_checksum` (the prior entry's checksum, by insertion order via `sequence_id`), chaining every entry to the one before it. `ProvenanceManager.verify_chain()` walks the full chain and reports any break — including a row that was hard-deleted from the underlying table, which a lone per-row checksum can't detect on its own.
+
+Note: the banking example above passes `agent_id="credit_data_service_v2"` to `track_entities_batch()` — this now actually populates the entry's `agent_id` field (previously a bug caused batch-level typed kwargs like `agent_id`/`entity_type`/`activity_id` to be silently absorbed into the opaque `metadata` blob instead).
+
+`export_prov()` mints entity/agent/activity URIs under `ProvenanceManager.DEFAULT_BASE_URI` (`https://semantica.dev/ns#` by default — the same namespace `RDFExporter`'s `NamespaceManager` uses for its `"semantica"` prefix, so KG-exported and PROV-exported URIs for the same `entity_id` co-resolve) unless overridden via `export_prov(base_uri=...)` or the CLI's `--base-uri` option.
 
 ## Related Guides
 

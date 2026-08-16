@@ -85,9 +85,35 @@ class FAISSIndex:
             return None
 
         idx = self.vector_ids.index(vector_id)
-        # Note: FAISS doesn't directly support retrieval by index in all cases
-        # This is a simplified approach
-        return None
+        reconstruct = getattr(self.index, "reconstruct", None)
+        if not callable(reconstruct):
+            return None
+
+        try:
+            return np.asarray(reconstruct(idx), dtype=np.float32)
+        except NotImplementedError:
+            return None
+        except RuntimeError as exc:
+            message = str(exc).casefold()
+            unsupported_errors = (
+                "reconstruct not implemented",
+                "reconstruct_from_offset not implemented",
+            )
+            if any(error in message for error in unsupported_errors):
+                return None
+            if "direct map not initialized" in message:
+                # IVF-family indices (e.g. IndexIVFFlat) support exact reconstruction
+                # but need their DirectMap built once before reconstruct() works.
+                make_direct_map = getattr(self.index, "make_direct_map", None)
+                if not callable(make_direct_map):
+                    return None
+                make_direct_map()
+                return np.asarray(reconstruct(idx), dtype=np.float32)
+            raise
+
+    def get_metadata(self, vector_id: str) -> Optional[Dict[str, Any]]:
+        """Get metadata by ID."""
+        return self.metadata.get(vector_id)
 
     def save(self, path: Union[str, Path]):
         """Save index to disk."""
@@ -137,12 +163,19 @@ class FAISSSearch:
         for i, (dist, idx) in enumerate(zip(distances[0], indices[0])):
             if idx < len(self.index.vector_ids):
                 vector_id = self.index.vector_ids[idx]
+                dist_val = float(dist)
+                
+                # Standardize score as similarity (0.0 to 1.0)
+                # while preserving original distance
+                similarity_score = 1.0 / (1.0 + max(0.0, dist_val))
+                
                 results.append(
                     {
                         "id": vector_id,
-                        "score": float(dist),
-                        "distance": float(dist),
+                        "score": similarity_score,
+                        "distance": dist_val,
                         "metadata": self.index.metadata.get(vector_id, {}),
+                        "vector": None,
                     }
                 )
 
@@ -444,6 +477,18 @@ class FAISSStore:
         # This method can be used for additional optimization
         self.logger.info("Index optimization completed")
         return True
+
+    def get_vector(self, vector_id: str) -> Optional[np.ndarray]:
+        """Get vector by ID."""
+        if self.index:
+            return self.index.get_vector(vector_id)
+        return None
+
+    def get_metadata(self, vector_id: str) -> Optional[Dict[str, Any]]:
+        """Get metadata by ID."""
+        if self.index:
+            return self.index.get_metadata(vector_id)
+        return None
 
     def get_stats(self) -> Dict[str, Any]:
         """Get index statistics."""

@@ -54,6 +54,7 @@ Version: 1.0.0
 """
 
 from typing import Any, Dict, List, Optional
+from datetime import datetime
 import uuid
 import time
 
@@ -78,13 +79,21 @@ class GraphBuilderWithProvenance:
         })
     """
     
-    def __init__(self, provenance: bool = False, **config):
+    def __init__(
+        self,
+        provenance: bool = False,
+        agent_id: Optional[str] = None,
+        is_automated: bool = True,
+        **config,
+    ):
         from .graph_builder import GraphBuilder
-        
+
         self.provenance = provenance
         self._builder = GraphBuilder(**config)
         self._prov_manager = None
-        
+        self._agent_id = agent_id or self.__class__.__name__
+        self._is_automated = is_automated
+
         if provenance:
             try:
                 from semantica.provenance import ProvenanceManager
@@ -94,12 +103,18 @@ class GraphBuilderWithProvenance:
     
     def build(self, sources, **kwargs):
         """Build graph with provenance tracking."""
-        # Track the build operation
+        activity_started_at_time = datetime.utcnow().isoformat()
+        # Track the build operation (recorded before the build runs, so it
+        # has no end time yet — this is the "in progress" marker).
         if self.provenance and self._prov_manager:
             build_id = f"graph_build_{uuid.uuid4().hex[:8]}"
             self._prov_manager.track_entity(
                 entity_id=build_id,
                 source="graph_construction",
+                agent_id=self._agent_id,
+                agent_type="software_agent",
+                is_automated=self._is_automated,
+                activity_started_at_time=activity_started_at_time,
                 metadata={
                     "entity_type": "graph_build_operation",
                     "operation": "build_graph",
@@ -107,16 +122,17 @@ class GraphBuilderWithProvenance:
                     "timestamp": time.time()
                 }
             )
-        
+
         result = self._builder.build(sources, **kwargs)
-        
+        activity_ended_at_time = datetime.utcnow().isoformat()
+
         # Track individual entities and relationships if available
         if self.provenance and self._prov_manager and hasattr(result, 'get'):
             try:
                 # Try to extract entities and relationships for tracking
                 entities = result.get('entities', [])
                 relationships = result.get('relationships', [])
-                
+
                 for entity in entities:
                     entity_id = entity.get('id') or str(entity.get('name', ''))
                     if entity_id:
@@ -124,6 +140,11 @@ class GraphBuilderWithProvenance:
                             entity_id=entity_id,
                             source="graph_construction",
                             entity_type="graph_entity",
+                            agent_id=self._agent_id,
+                            agent_type="software_agent",
+                            is_automated=self._is_automated,
+                            activity_started_at_time=activity_started_at_time,
+                            activity_ended_at_time=activity_ended_at_time,
                             metadata={
                                 "operation": "build_entity",
                                 "entity_type": entity.get('type'),
@@ -131,7 +152,7 @@ class GraphBuilderWithProvenance:
                                 "timestamp": time.time()
                             }
                         )
-                
+
                 for relationship in relationships:
                     rel_id = relationship.get('id') or f"{relationship.get('source', '')}-{relationship.get('target', '')}"
                     if rel_id:
@@ -139,6 +160,11 @@ class GraphBuilderWithProvenance:
                             entity_id=rel_id,
                             source="graph_construction",
                             entity_type="graph_relationship",
+                            agent_id=self._agent_id,
+                            agent_type="software_agent",
+                            is_automated=self._is_automated,
+                            activity_started_at_time=activity_started_at_time,
+                            activity_ended_at_time=activity_ended_at_time,
                             metadata={
                                 "operation": "build_relationship",
                                 "relationship_type": relationship.get('type'),
@@ -149,32 +175,39 @@ class GraphBuilderWithProvenance:
             except Exception as e:
                 # Don't fail the build if provenance tracking fails
                 pass
-        
+
         return result
-    
+
     def build_single_source(self, kg_data, **kwargs):
         """Build graph from single source with provenance tracking."""
-        # Track the build operation
+        activity_started_at_time = datetime.utcnow().isoformat()
+        # Track the build operation (recorded before the build runs, so it
+        # has no end time yet — this is the "in progress" marker).
         if self.provenance and self._prov_manager:
             build_id = f"graph_build_single_{uuid.uuid4().hex[:8]}"
             self._prov_manager.track_entity(
                 entity_id=build_id,
                 source="graph_construction",
+                agent_id=self._agent_id,
+                agent_type="software_agent",
+                is_automated=self._is_automated,
+                activity_started_at_time=activity_started_at_time,
                 metadata={
                     "entity_type": "graph_build_operation",
                     "operation": "build_single_source",
                     "timestamp": time.time()
                 }
             )
-        
+
         result = self._builder.build_single_source(kg_data, **kwargs)
-        
+        activity_ended_at_time = datetime.utcnow().isoformat()
+
         # Track entities and relationships if available
         if self.provenance and self._prov_manager and isinstance(result, dict):
             try:
                 entities = result.get('entities', [])
                 relationships = result.get('relationships', [])
-                
+
                 for entity in entities:
                     entity_id = entity.get('id') or str(entity.get('name', ''))
                     if entity_id:
@@ -182,6 +215,11 @@ class GraphBuilderWithProvenance:
                             entity_id=entity_id,
                             source="graph_construction",
                             entity_type="graph_entity",
+                            agent_id=self._agent_id,
+                            agent_type="software_agent",
+                            is_automated=self._is_automated,
+                            activity_started_at_time=activity_started_at_time,
+                            activity_ended_at_time=activity_ended_at_time,
                             metadata={
                                 "operation": "build_entity",
                                 "entity_type": entity.get('type'),
@@ -197,6 +235,11 @@ class GraphBuilderWithProvenance:
                             entity_id=rel_id,
                             source="graph_construction",
                             entity_type="graph_relationship",
+                            agent_id=self._agent_id,
+                            agent_type="software_agent",
+                            is_automated=self._is_automated,
+                            activity_started_at_time=activity_started_at_time,
+                            activity_ended_at_time=activity_ended_at_time,
                             metadata={
                                 "operation": "build_relationship",
                                 "relationship_type": relationship.get('type'),
@@ -247,24 +290,33 @@ class AlgorithmTrackerWithProvenance:
         )
     """
     
-    def __init__(self, provenance: bool = False, **config):
+    def __init__(
+        self,
+        provenance: bool = False,
+        agent_id: Optional[str] = None,
+        is_automated: bool = True,
+        **config,
+    ):
         self.provenance = provenance
         self._prov_manager = None
-        
+        self._agent_id = agent_id or self.__class__.__name__
+        self._is_automated = is_automated
+
         if provenance:
             try:
                 from semantica.provenance import ProvenanceManager
                 self._prov_manager = ProvenanceManager()
             except ImportError:
                 self.provenance = False
-    
+
     def track_embedding_computation(
         self,
         graph: Any,
         algorithm: str,
         embeddings: Dict[str, List[float]],
         parameters: Dict[str, Any],
-        source: str = None
+        source: str = None,
+        **kwargs
     ):
         """
         Track node embedding algorithm computation with provenance.
@@ -286,6 +338,11 @@ class AlgorithmTrackerWithProvenance:
             self._prov_manager.track_entity(
                 entity_id=execution_id,
                 source=source or "algorithm_execution",
+                agent_id=self._agent_id,
+                agent_type="software_agent",
+                is_automated=self._is_automated,
+                activity_started_at_time=kwargs.get("activity_started_at_time"),
+                activity_ended_at_time=kwargs.get("activity_ended_at_time"),
                 metadata={
                     "entity_type": "embedding_computation",
                     "algorithm": algorithm,
@@ -303,6 +360,11 @@ class AlgorithmTrackerWithProvenance:
                 self._prov_manager.track_entity(
                     entity_id=f"embedding_{node_id}",
                     source=source or "algorithm_execution",
+                    agent_id=self._agent_id,
+                    agent_type="software_agent",
+                    is_automated=self._is_automated,
+                    activity_started_at_time=kwargs.get("activity_started_at_time"),
+                    activity_ended_at_time=kwargs.get("activity_ended_at_time"),
                     metadata={
                         "entity_type": "node_embedding",
                         "algorithm": algorithm,
@@ -345,6 +407,11 @@ class AlgorithmTrackerWithProvenance:
             self._prov_manager.track_entity(
                 entity_id=execution_id,
                 source=source or "algorithm_execution",
+                agent_id=self._agent_id,
+                agent_type="software_agent",
+                is_automated=self._is_automated,
+                activity_started_at_time=kwargs.get("activity_started_at_time"),
+                activity_ended_at_time=kwargs.get("activity_ended_at_time"),
                 metadata={
                     "entity_type": "similarity_calculation",
                     "algorithm": f"similarity_{method}",
@@ -363,6 +430,11 @@ class AlgorithmTrackerWithProvenance:
                 self._prov_manager.track_entity(
                     entity_id=f"similarity_{node_id}_{execution_id}",
                     source=source or "algorithm_execution",
+                    agent_id=self._agent_id,
+                    agent_type="software_agent",
+                    is_automated=self._is_automated,
+                    activity_started_at_time=kwargs.get("activity_started_at_time"),
+                    activity_ended_at_time=kwargs.get("activity_ended_at_time"),
                     metadata={
                         "entity_type": "similarity_result",
                         "method": method,
@@ -393,6 +465,11 @@ class AlgorithmTrackerWithProvenance:
             self._prov_manager.track_entity(
                 entity_id=execution_id,
                 source=source or "algorithm_execution",
+                agent_id=self._agent_id,
+                agent_type="software_agent",
+                is_automated=self._is_automated,
+                activity_started_at_time=kwargs.get("activity_started_at_time"),
+                activity_ended_at_time=kwargs.get("activity_ended_at_time"),
                 metadata={
                     "entity_type": "link_prediction",
                     "algorithm": f"link_prediction_{method}",
@@ -410,6 +487,11 @@ class AlgorithmTrackerWithProvenance:
                 self._prov_manager.track_entity(
                     entity_id=f"prediction_{execution_id}_{i}",
                     source=source or "algorithm_execution",
+                    agent_id=self._agent_id,
+                    agent_type="software_agent",
+                    is_automated=self._is_automated,
+                    activity_started_at_time=kwargs.get("activity_started_at_time"),
+                    activity_ended_at_time=kwargs.get("activity_ended_at_time"),
                     metadata={
                         "entity_type": "link_prediction_result",
                         "method": method,
@@ -453,6 +535,11 @@ class AlgorithmTrackerWithProvenance:
             self._prov_manager.track_entity(
                 entity_id=execution_id,
                 source=source or "algorithm_execution",
+                agent_id=self._agent_id,
+                agent_type="software_agent",
+                is_automated=self._is_automated,
+                activity_started_at_time=kwargs.get("activity_started_at_time"),
+                activity_ended_at_time=kwargs.get("activity_ended_at_time"),
                 metadata={
                     "entity_type": "centrality_calculation",
                     "algorithm": f"centrality_{method}",
@@ -470,6 +557,11 @@ class AlgorithmTrackerWithProvenance:
                 self._prov_manager.track_entity(
                     entity_id=f"centrality_{node_id}_{execution_id}",
                     source=source or "algorithm_execution",
+                    agent_id=self._agent_id,
+                    agent_type="software_agent",
+                    is_automated=self._is_automated,
+                    activity_started_at_time=kwargs.get("activity_started_at_time"),
+                    activity_ended_at_time=kwargs.get("activity_ended_at_time"),
                     metadata={
                         "entity_type": "centrality_score",
                         "method": method,
@@ -500,6 +592,11 @@ class AlgorithmTrackerWithProvenance:
             self._prov_manager.track_entity(
                 entity_id=execution_id,
                 source=source or "algorithm_execution",
+                agent_id=self._agent_id,
+                agent_type="software_agent",
+                is_automated=self._is_automated,
+                activity_started_at_time=kwargs.get("activity_started_at_time"),
+                activity_ended_at_time=kwargs.get("activity_ended_at_time"),
                 metadata={
                     "entity_type": "community_detection",
                     "algorithm": f"community_detection_{method}",
@@ -517,6 +614,11 @@ class AlgorithmTrackerWithProvenance:
                 self._prov_manager.track_entity(
                     entity_id=f"community_{execution_id}_{i}",
                     source=source or "algorithm_execution",
+                    agent_id=self._agent_id,
+                    agent_type="software_agent",
+                    is_automated=self._is_automated,
+                    activity_started_at_time=kwargs.get("activity_started_at_time"),
+                    activity_ended_at_time=kwargs.get("activity_ended_at_time"),
                     metadata={
                         "entity_type": "community",
                         "method": method,
@@ -547,6 +649,11 @@ class AlgorithmTrackerWithProvenance:
             self._prov_manager.track_entity(
                 entity_id=execution_id,
                 source=source or "graph_construction",
+                agent_id=self._agent_id,
+                agent_type="software_agent",
+                is_automated=self._is_automated,
+                activity_started_at_time=kwargs.get("activity_started_at_time"),
+                activity_ended_at_time=kwargs.get("activity_ended_at_time"),
                 metadata={
                     "entity_type": "graph_construction",
                     "entities_count": entities_count,
@@ -573,6 +680,11 @@ class AlgorithmTrackerWithProvenance:
             self._prov_manager.track_entity(
                 entity_id=result_id,
                 source=source or "similarity_result",
+                agent_id=self._agent_id,
+                agent_type="software_agent",
+                is_automated=self._is_automated,
+                activity_started_at_time=kwargs.get("activity_started_at_time"),
+                activity_ended_at_time=kwargs.get("activity_ended_at_time"),
                 metadata={
                     "entity_type": "similarity_result",
                     "node_id": node_id,
@@ -599,6 +711,11 @@ class AlgorithmTrackerWithProvenance:
             self._prov_manager.track_entity(
                 entity_id=result_id,
                 source=source or "similarity_threshold",
+                agent_id=self._agent_id,
+                agent_type="software_agent",
+                is_automated=self._is_automated,
+                activity_started_at_time=kwargs.get("activity_started_at_time"),
+                activity_ended_at_time=kwargs.get("activity_ended_at_time"),
                 metadata={
                     "entity_type": "similarity_threshold_analysis",
                     "execution_id": execution_id,
@@ -624,6 +741,11 @@ class AlgorithmTrackerWithProvenance:
             self._prov_manager.track_entity(
                 entity_id=result_id,
                 source=source or "entity_processing",
+                agent_id=self._agent_id,
+                agent_type="software_agent",
+                is_automated=self._is_automated,
+                activity_started_at_time=kwargs.get("activity_started_at_time"),
+                activity_ended_at_time=kwargs.get("activity_ended_at_time"),
                 metadata={
                     "entity_type": "entity_processing",
                     "processed_entity_id": entity_id,
@@ -648,6 +770,11 @@ class AlgorithmTrackerWithProvenance:
             self._prov_manager.track_entity(
                 entity_id=result_id,
                 source=source or "relationship_processing",
+                agent_id=self._agent_id,
+                agent_type="software_agent",
+                is_automated=self._is_automated,
+                activity_started_at_time=kwargs.get("activity_started_at_time"),
+                activity_ended_at_time=kwargs.get("activity_ended_at_time"),
                 metadata={
                     "entity_type": "relationship_processing",
                     "processed_relationship_id": relationship_id,
@@ -672,6 +799,11 @@ class AlgorithmTrackerWithProvenance:
             self._prov_manager.track_entity(
                 entity_id=result_id,
                 source=source or "path_analysis",
+                agent_id=self._agent_id,
+                agent_type="software_agent",
+                is_automated=self._is_automated,
+                activity_started_at_time=kwargs.get("activity_started_at_time"),
+                activity_ended_at_time=kwargs.get("activity_ended_at_time"),
                 metadata={
                     "entity_type": "path_analysis",
                     "paths_count": len(paths) if paths else 0,
@@ -700,6 +832,11 @@ class AlgorithmTrackerWithProvenance:
             self._prov_manager.track_entity(
                 entity_id=result_id,
                 source=source or "path_finding",
+                agent_id=self._agent_id,
+                agent_type="software_agent",
+                is_automated=self._is_automated,
+                activity_started_at_time=kwargs.get("activity_started_at_time"),
+                activity_ended_at_time=kwargs.get("activity_ended_at_time"),
                 metadata={
                     "entity_type": "path_finding",
                     "source_node": source_node,
@@ -724,6 +861,11 @@ class AlgorithmTrackerWithProvenance:
             self._prov_manager.track_entity(
                 entity_id=result_id,
                 source=source or "embedding_analysis",
+                agent_id=self._agent_id,
+                agent_type="software_agent",
+                is_automated=self._is_automated,
+                activity_started_at_time=kwargs.get("activity_started_at_time"),
+                activity_ended_at_time=kwargs.get("activity_ended_at_time"),
                 metadata={
                     "entity_type": "embedding_analysis",
                     "embeddings_count": len(embeddings),
@@ -746,6 +888,11 @@ class AlgorithmTrackerWithProvenance:
             self._prov_manager.track_entity(
                 entity_id=result_id,
                 source=source or "connectivity_analysis",
+                agent_id=self._agent_id,
+                agent_type="software_agent",
+                is_automated=self._is_automated,
+                activity_started_at_time=kwargs.get("activity_started_at_time"),
+                activity_ended_at_time=kwargs.get("activity_ended_at_time"),
                 metadata={
                     "entity_type": "connectivity_analysis",
                     "components_count": len(components),
@@ -768,6 +915,11 @@ class AlgorithmTrackerWithProvenance:
             self._prov_manager.track_entity(
                 entity_id=result_id,
                 source=source or "cross_layer_analysis",
+                agent_id=self._agent_id,
+                agent_type="software_agent",
+                is_automated=self._is_automated,
+                activity_started_at_time=kwargs.get("activity_started_at_time"),
+                activity_ended_at_time=kwargs.get("activity_ended_at_time"),
                 metadata={
                     "entity_type": "cross_layer_analysis",
                     "layers_count": len(cross_layer_results) if cross_layer_results else 0,
@@ -793,6 +945,11 @@ class AlgorithmTrackerWithProvenance:
             self._prov_manager.track_entity(
                 entity_id=result_id,
                 source=source or "pipeline_summary",
+                agent_id=self._agent_id,
+                agent_type="software_agent",
+                is_automated=self._is_automated,
+                activity_started_at_time=kwargs.get("activity_started_at_time"),
+                activity_ended_at_time=kwargs.get("activity_ended_at_time"),
                 metadata={
                     "entity_type": "pipeline_summary",
                     "pipeline_id": pipeline_id,
@@ -820,6 +977,11 @@ class AlgorithmTrackerWithProvenance:
             self._prov_manager.track_entity(
                 entity_id=summary_id,
                 source=source or "workflow_summary",
+                agent_id=self._agent_id,
+                agent_type="software_agent",
+                is_automated=self._is_automated,
+                activity_started_at_time=kwargs.get("activity_started_at_time"),
+                activity_ended_at_time=kwargs.get("activity_ended_at_time"),
                 metadata={
                     "entity_type": "workflow_summary",
                     "master_workflow_id": master_workflow_id,
@@ -848,6 +1010,11 @@ class AlgorithmTrackerWithProvenance:
             self._prov_manager.track_entity(
                 entity_id=result_id,
                 source=source or "link_prediction_result",
+                agent_id=self._agent_id,
+                agent_type="software_agent",
+                is_automated=self._is_automated,
+                activity_started_at_time=kwargs.get("activity_started_at_time"),
+                activity_ended_at_time=kwargs.get("activity_ended_at_time"),
                 metadata={
                     "entity_type": "link_prediction_result",
                     "source_node": source_node,
@@ -869,6 +1036,11 @@ class AlgorithmTrackerWithProvenance:
             self._prov_manager.track_entity(
                 entity_id=result_id,
                 source=source or analysis_type,
+                agent_id=self._agent_id,
+                agent_type="software_agent",
+                is_automated=self._is_automated,
+                activity_started_at_time=kwargs.get("activity_started_at_time"),
+                activity_ended_at_time=kwargs.get("activity_ended_at_time"),
                 metadata={"entity_type": analysis_type, "timestamp": time.time(), **{k: str(v)[:100] for k, v in kwargs.items() if not callable(v)}},
             )
             return result_id
